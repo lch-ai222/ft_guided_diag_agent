@@ -1,0 +1,970 @@
+@prefix qtl: <http://lianshan.ai/ontology/qlt_fta#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+#################################################################
+# Corrected ontology instance demo
+# Trees:
+#   FT_001: 车机黑屏
+#   FT_002: 车门无法关闭
+#
+# Notes:
+# - No start/root symptom status is MISSING.
+# - Every SymptomTransition has a non-empty testId.
+# - OntologyTest.name may be missing, but the test entity itself still exists
+#   and is referenced by the transition.
+#################################################################
+
+#################################################################
+# Tree 1: 车机黑屏
+#################################################################
+
+qtl:FailureSymptom_S001 a qtl:FailureSymptom ;
+    qtl:symptomId "S001" ;
+    qtl:symptomName "车机黑屏" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "start" ;
+    qtl:symptomDesc "用户可直接观察到车机屏幕无显示或黑屏。" ;
+    qtl:symptomDescStatus "EXTRACTED_INFERRED" ;
+    qtl:symptomChunkIds "black_screen_doc:1" .
+
+qtl:FailureSymptom_S002 a qtl:FailureSymptom ;
+    qtl:symptomId "S002" ;
+    qtl:symptomName "上电后黑屏" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "inner" ;
+    qtl:symptomDesc "车辆上电后车机未进入正常显示状态。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "black_screen_doc:1" .
+
+qtl:FailureSymptom_S003 a qtl:FailureSymptom ;
+    qtl:symptomId "S003" ;
+    qtl:symptomName "屏幕显示链路异常" ;
+    qtl:symptomNameStatus "EXTRACTED_INFERRED" ;
+    qtl:symptomLevel "inner" ;
+    qtl:symptomDesc "显示屏、背光或屏线链路存在异常。" ;
+    qtl:symptomDescStatus "EXTRACTED_INFERRED" ;
+    qtl:symptomChunkIds "black_screen_doc:2" .
+
+qtl:FailureSymptom_S004 a qtl:FailureSymptom ;
+    qtl:symptomId "S004" ;
+    qtl:symptomName "车机供电异常" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "inner" ;
+    qtl:symptomDesc "车机主机或显示模块供电电压不满足正常工作条件。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "black_screen_doc:2" .
+
+qtl:FailureSymptom_S005 a qtl:FailureSymptom ;
+    qtl:symptomId "S005" ;
+    qtl:symptomName "软件启动异常" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "inner" ;
+    qtl:symptomDesc "系统启动过程中出现卡死、崩溃或无法完成初始化。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "black_screen_doc:3" .
+
+qtl:FailureSymptom_S006 a qtl:FailureSymptom ;
+    qtl:symptomId "S006" ;
+    qtl:symptomName "电源管理芯片损坏" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "root" ;
+    qtl:symptomDesc "电源管理芯片失效导致车机无法获得稳定工作电源。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "black_screen_doc:4" ;
+    qtl:hasMeasure qtl:OntologyMeasure_M001 .
+
+qtl:FailureSymptom_S007 a qtl:FailureSymptom ;
+    qtl:symptomId "S007" ;
+    qtl:symptomName "电源连接器松脱" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "root" ;
+    qtl:symptomDesc "电源连接器插接不到位或松脱导致供电中断。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "black_screen_doc:4" ;
+    qtl:hasMeasure qtl:OntologyMeasure_M002 .
+
+qtl:FailureSymptom_S008 a qtl:FailureSymptom ;
+    qtl:symptomId "S008" ;
+    qtl:symptomName "显示屏模组损坏" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "root" ;
+    qtl:symptomDesc "显示屏模组硬件损坏，无法输出图像。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "black_screen_doc:5" ;
+    qtl:hasMeasure qtl:OntologyMeasure_M003 .
+
+qtl:FailureSymptom_S009 a qtl:FailureSymptom ;
+    qtl:symptomId "S009" ;
+    qtl:symptomName "背光驱动电路失效" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "root" ;
+    qtl:symptomDesc "背光驱动电路失效导致屏幕有信号但无可见亮度。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "black_screen_doc:5" ;
+    qtl:hasMeasure qtl:OntologyMeasure_M004 .
+
+qtl:FailureSymptom_S010 a qtl:FailureSymptom ;
+    qtl:symptomId "S010" ;
+    qtl:symptomName "LVDS屏线接触不良" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "root" ;
+    qtl:symptomDesc "LVDS屏线接触不良导致显示信号无法稳定传输。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "black_screen_doc:6" ;
+    qtl:hasMeasure qtl:OntologyMeasure_M005 .
+
+qtl:FailureSymptom_S011 a qtl:FailureSymptom ;
+    qtl:symptomId "S011" ;
+    qtl:symptomName "主板短路" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "root" ;
+    qtl:symptomDesc "车机主板局部短路导致系统无法上电或保护关断。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "black_screen_doc:6" ;
+    qtl:hasMeasure qtl:OntologyMeasure_M006 .
+
+qtl:FailureSymptom_S012 a qtl:FailureSymptom ;
+    qtl:symptomId "S012" ;
+    qtl:symptomName "系统镜像损坏" ;
+    qtl:symptomNameStatus "EXTRACTED_INFERRED" ;
+    qtl:symptomLevel "root" ;
+    qtl:symptomDesc "系统镜像或关键启动文件损坏，导致车机启动失败。" ;
+    qtl:symptomDescStatus "EXTRACTED_INFERRED" ;
+    qtl:symptomChunkIds "black_screen_doc:7" ;
+    qtl:hasMeasure qtl:OntologyMeasure_M007 .
+
+#################################################################
+# Tree 2: 车门无法关闭
+#################################################################
+
+qtl:FailureSymptom_S101 a qtl:FailureSymptom ;
+    qtl:symptomId "S101" ;
+    qtl:symptomName "车门无法关闭" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "start" ;
+    qtl:symptomDesc "用户可直接观察到车门无法正常闭合或闭合后无法锁止。" ;
+    qtl:symptomDescStatus "EXTRACTED_INFERRED" ;
+    qtl:symptomChunkIds "door_close_doc:1" .
+
+qtl:FailureSymptom_S102 a qtl:FailureSymptom ;
+    qtl:symptomId "S102" ;
+    qtl:symptomName "门锁未锁止" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "inner" ;
+    qtl:symptomDesc "车门到达关闭位置后门锁未进入锁止状态。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "door_close_doc:1" .
+
+qtl:FailureSymptom_S103 a qtl:FailureSymptom ;
+    qtl:symptomId "S103" ;
+    qtl:symptomName "车门姿态异常" ;
+    qtl:symptomNameStatus "EXTRACTED_INFERRED" ;
+    qtl:symptomLevel "inner" ;
+    qtl:symptomDesc "车门与车身开口或锁扣之间存在位置偏差。" ;
+    qtl:symptomDescStatus "EXTRACTED_INFERRED" ;
+    qtl:symptomChunkIds "door_close_doc:2" .
+
+qtl:FailureSymptom_S104 a qtl:FailureSymptom ;
+    qtl:symptomId "S104" ;
+    qtl:symptomName "电动门控制异常" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "inner" ;
+    qtl:symptomDesc "电动门执行或控制链路无法完成关闭动作。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "door_close_doc:3" .
+
+qtl:FailureSymptom_S105 a qtl:FailureSymptom ;
+    qtl:symptomId "S105" ;
+    qtl:symptomName "门锁执行器损坏" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "root" ;
+    qtl:symptomDesc "门锁执行器失效，无法驱动锁止机构动作。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "door_close_doc:4" ;
+    qtl:hasMeasure qtl:OntologyMeasure_M101 .
+
+qtl:FailureSymptom_S106 a qtl:FailureSymptom ;
+    qtl:symptomId "S106" ;
+    qtl:symptomName "锁扣位置偏移" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "root" ;
+    qtl:symptomDesc "车身锁扣安装位置偏移，导致锁舌无法正确啮合。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "door_close_doc:4" ;
+    qtl:hasMeasure qtl:OntologyMeasure_M102 .
+
+qtl:FailureSymptom_S107 a qtl:FailureSymptom ;
+    qtl:symptomId "S107" ;
+    qtl:symptomName "铰链变形" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "root" ;
+    qtl:symptomDesc "车门铰链变形导致车门关闭轨迹偏移。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "door_close_doc:5" ;
+    qtl:hasMeasure qtl:OntologyMeasure_M103 .
+
+qtl:FailureSymptom_S108 a qtl:FailureSymptom ;
+    qtl:symptomId "S108" ;
+    qtl:symptomName "密封条干涉" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "root" ;
+    qtl:symptomDesc "密封条装配异常或形变导致车门关闭阻力过大。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "door_close_doc:5" ;
+    qtl:hasMeasure qtl:OntologyMeasure_M104 .
+
+qtl:FailureSymptom_S109 a qtl:FailureSymptom ;
+    qtl:symptomId "S109" ;
+    qtl:symptomName "闭合传感器失效" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "root" ;
+    qtl:symptomDesc "闭合传感器无法正确反馈车门闭合状态。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "door_close_doc:6" ;
+    qtl:hasMeasure qtl:OntologyMeasure_M105 .
+
+qtl:FailureSymptom_S110 a qtl:FailureSymptom ;
+    qtl:symptomId "S110" ;
+    qtl:symptomName "车门控制模块软件异常" ;
+    qtl:symptomNameStatus "EXTRACTED_INFERRED" ;
+    qtl:symptomLevel "root" ;
+    qtl:symptomDesc "控制模块软件逻辑异常导致关闭动作无法完成或误判。" ;
+    qtl:symptomDescStatus "EXTRACTED_INFERRED" ;
+    qtl:symptomChunkIds "door_close_doc:7" ;
+    qtl:hasMeasure qtl:OntologyMeasure_M106 .
+
+qtl:FailureSymptom_S111 a qtl:FailureSymptom ;
+    qtl:symptomId "S111" ;
+    qtl:symptomName "线束接触不良" ;
+    qtl:symptomNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomLevel "root" ;
+    qtl:symptomDesc "门锁或传感器线束接触不良导致控制信号或反馈信号异常。" ;
+    qtl:symptomDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:symptomChunkIds "door_close_doc:7" ;
+    qtl:hasMeasure qtl:OntologyMeasure_M107 .
+
+#################################################################
+# OntologyTest
+#################################################################
+
+qtl:OntologyTest_T001 a qtl:OntologyTest ;
+    qtl:testId "T001" ;
+    qtl:testName "确认上电后显示状态" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "上电后屏幕仍无显示则进入下级诊断。" ;
+    qtl:testRuleStatus "EXTRACTED_INFERRED" ;
+    qtl:testTarget "车机显示状态" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "确认车机上电后的显示表现。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "black_screen_doc:1" .
+
+qtl:OntologyTest_T002 a qtl:OntologyTest ;
+    qtl:testId "T002" ;
+    qtl:testName "测量车机供电电压" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnit "V" ;
+    qtl:testUnitStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testHilim "16.0"^^xsd:decimal ;
+    qtl:testHilimStatus "SUGGESTED_GROUNDED" ;
+    qtl:testLolim "9.0"^^xsd:decimal ;
+    qtl:testLolimStatus "SUGGESTED_GROUNDED" ;
+    qtl:testRule "供电电压低于工作范围或异常波动时判定供电链路异常。" ;
+    qtl:testRuleStatus "EXTRACTED_INFERRED" ;
+    qtl:testTarget "车机供电端" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "使用万用表或诊断设备测量车机供电端电压。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "black_screen_doc:2" .
+
+qtl:OntologyTest_T003 a qtl:OntologyTest ;
+    qtl:testId "T003" ;
+    qtl:testName "检查显示链路" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "屏幕、背光或屏线任一环节异常则进入显示链路诊断。" ;
+    qtl:testRuleStatus "EXTRACTED_INFERRED" ;
+    qtl:testTarget "显示屏、背光、屏线" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "观察屏幕亮度、图像输出并检查屏线连接。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "black_screen_doc:2" .
+
+qtl:OntologyTest_T004 a qtl:OntologyTest ;
+    qtl:testId "T004" ;
+    qtl:testName "读取启动日志" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "启动日志存在启动失败、镜像校验失败或系统崩溃记录时进入软件诊断。" ;
+    qtl:testRuleStatus "EXTRACTED_INFERRED" ;
+    qtl:testTarget "车机启动日志" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "通过诊断工具读取系统启动日志。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "black_screen_doc:3" .
+
+qtl:OntologyTest_T005 a qtl:OntologyTest ;
+    qtl:testId "T005" ;
+    qtl:testName "检测电源管理芯片输出" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnit "V" ;
+    qtl:testUnitStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "电源管理芯片输出缺失或异常时判定芯片损坏。" ;
+    qtl:testRuleStatus "EXTRACTED_INFERRED" ;
+    qtl:testTarget "电源管理芯片输出端" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "检测芯片各路输出是否满足设计要求。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "black_screen_doc:4" .
+
+qtl:OntologyTest_T006 a qtl:OntologyTest ;
+    qtl:testId "T006" ;
+    qtl:testName "检查电源连接器插接状态" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "连接器松脱、退针或插接不到位时判定电源连接器松脱。" ;
+    qtl:testRuleStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testTarget "电源连接器" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "拆检并确认电源连接器插接和端子状态。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "black_screen_doc:4" .
+
+qtl:OntologyTest_T007 a qtl:OntologyTest ;
+    qtl:testId "T007" ;
+    qtl:testName "替换显示屏验证" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "替换显示屏后恢复显示则判定原显示屏模组损坏。" ;
+    qtl:testRuleStatus "EXTRACTED_INFERRED" ;
+    qtl:testTarget "显示屏模组" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "使用良品显示屏进行替换验证。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "black_screen_doc:5" .
+
+qtl:OntologyTest_T008 a qtl:OntologyTest ;
+    qtl:testId "T008" ;
+    qtl:testName "检测背光驱动输出" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnit "V" ;
+    qtl:testUnitStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "背光驱动输出异常时判定背光驱动电路失效。" ;
+    qtl:testRuleStatus "EXTRACTED_INFERRED" ;
+    qtl:testTarget "背光驱动电路" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "检测背光驱动输出和背光使能信号。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "black_screen_doc:5" .
+
+qtl:OntologyTest_T009 a qtl:OntologyTest ;
+    qtl:testId "T009" ;
+    qtl:testName "检查LVDS屏线连接" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "屏线松动、破损或端子接触异常时判定LVDS屏线接触不良。" ;
+    qtl:testRuleStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testTarget "LVDS屏线" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "检查屏线端子、压接和导通情况。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "black_screen_doc:6" .
+
+qtl:OntologyTest_T010 a qtl:OntologyTest ;
+    qtl:testId "T010" ;
+    qtl:testName "测量主板对地阻抗" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnit "ohm" ;
+    qtl:testUnitStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "主板关键供电网络对地阻抗异常偏低时判定主板短路。" ;
+    qtl:testRuleStatus "EXTRACTED_INFERRED" ;
+    qtl:testTarget "主板供电网络" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "断电后测量主板关键电源网络对地阻抗。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "black_screen_doc:6" .
+
+qtl:OntologyTest_T011 a qtl:OntologyTest ;
+    qtl:testId "T011" ;
+    qtl:testName "校验系统镜像完整性" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "系统镜像校验失败时判定系统镜像损坏。" ;
+    qtl:testRuleStatus "EXTRACTED_INFERRED" ;
+    qtl:testTarget "系统镜像" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "使用诊断工具校验系统镜像或启动分区完整性。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "black_screen_doc:7" .
+
+qtl:OntologyTest_T101 a qtl:OntologyTest ;
+    qtl:testId "T101" ;
+    qtl:testName "确认车门关闭表现" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "车门无法闭合或闭合后无法锁止时进入下级诊断。" ;
+    qtl:testRuleStatus "EXTRACTED_INFERRED" ;
+    qtl:testTarget "车门关闭状态" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "观察车门关闭和锁止表现。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "door_close_doc:1" .
+
+qtl:OntologyTest_T102 a qtl:OntologyTest ;
+    qtl:testId "T102" ;
+    qtl:testName "检查门锁锁止响应" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "关闭动作完成但门锁未锁止时进入门锁诊断。" ;
+    qtl:testRuleStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testTarget "门锁机构" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "检查门锁是否有锁止动作和反馈。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "door_close_doc:1" .
+
+qtl:OntologyTest_T103 a qtl:OntologyTest ;
+    qtl:testId "T103" ;
+    qtl:testName "检查车门与锁扣相对位置" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "车门与锁扣位置偏差明显时进入车门姿态诊断。" ;
+    qtl:testRuleStatus "EXTRACTED_INFERRED" ;
+    qtl:testTarget "车门、锁扣、铰链" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "观察车门间隙、锁扣啮合位置和关闭轨迹。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "door_close_doc:2" .
+
+qtl:OntologyTest_T104 a qtl:OntologyTest ;
+    qtl:testId "T104" ;
+    qtl:testName "执行电动门诊断自检" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "诊断自检报告执行或控制异常时进入电动门控制诊断。" ;
+    qtl:testRuleStatus "EXTRACTED_INFERRED" ;
+    qtl:testTarget "电动门控制系统" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "使用诊断仪执行电动门控制系统自检。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "door_close_doc:3" .
+
+qtl:OntologyTest_T105 a qtl:OntologyTest ;
+    qtl:testId "T105" ;
+    qtl:testName "驱动门锁执行器动作" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "执行器无动作或动作无力时判定门锁执行器损坏。" ;
+    qtl:testRuleStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testTarget "门锁执行器" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "通过诊断仪或外部供电驱动执行器动作。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "door_close_doc:4" .
+
+qtl:OntologyTest_T106 a qtl:OntologyTest ;
+    qtl:testId "T106" ;
+    qtl:testName "测量锁扣安装位置" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnit "mm" ;
+    qtl:testUnitStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "锁扣位置偏离装配基准时判定锁扣位置偏移。" ;
+    qtl:testRuleStatus "EXTRACTED_INFERRED" ;
+    qtl:testTarget "车身锁扣" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "测量锁扣安装位置与标准位置的偏差。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "door_close_doc:4" .
+
+qtl:OntologyTest_T107 a qtl:OntologyTest ;
+    qtl:testId "T107" ;
+    qtl:testName "检查铰链变形和间隙" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnit "mm" ;
+    qtl:testUnitStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "铰链变形或车门间隙异常时判定铰链变形。" ;
+    qtl:testRuleStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testTarget "车门铰链" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "检查铰链外观、间隙和关闭轨迹。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "door_close_doc:5" .
+
+qtl:OntologyTest_T108 a qtl:OntologyTest ;
+    qtl:testId "T108" ;
+    qtl:testName "检查密封条干涉" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "密封条装配异常、隆起或硬化造成明显干涉时判定密封条干涉。" ;
+    qtl:testRuleStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testTarget "车门密封条" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "检查密封条装配、形变和压缩状态。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "door_close_doc:5" .
+
+qtl:OntologyTest_T109 a qtl:OntologyTest ;
+    qtl:testId "T109" ;
+    qtl:testName "读取闭合传感器信号" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "闭合状态变化时传感器信号不变化，则判定闭合传感器失效。" ;
+    qtl:testRuleStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testTarget "闭合传感器" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "读取车门闭合传感器信号并与实际状态对比。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "door_close_doc:6" .
+
+qtl:OntologyTest_T110 a qtl:OntologyTest ;
+    qtl:testId "T110" ;
+    qtl:testName "读取车门控制模块故障码" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "存在软件逻辑、标定或控制异常故障码时判定控制模块软件异常。" ;
+    qtl:testRuleStatus "EXTRACTED_INFERRED" ;
+    qtl:testTarget "车门控制模块" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "读取车门控制模块故障码和版本信息。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "door_close_doc:7" .
+
+qtl:OntologyTest_T111 a qtl:OntologyTest ;
+    qtl:testId "T111" ;
+    qtl:testName "检查门锁和传感器线束" ;
+    qtl:testNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRule "线束松动、虚接或导通异常时判定线束接触不良。" ;
+    qtl:testRuleStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testTarget "门锁与传感器线束" ;
+    qtl:testTargetStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testDesc "检查线束插接、端子退针和导通情况。" ;
+    qtl:testDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:testChunkIds "door_close_doc:7" .
+
+# Placeholder test example: test entity exists and is referenced;
+# testName may be missing, but testId is never missing on transition.
+qtl:OntologyTest_T112 a qtl:OntologyTest ;
+    qtl:testId "T112" ;
+    qtl:testNameStatus "MISSING" ;
+    qtl:testUnitStatus "MISSING" ;
+    qtl:testHilimStatus "MISSING" ;
+    qtl:testLolimStatus "MISSING" ;
+    qtl:testRuleStatus "MISSING" ;
+    qtl:testTarget "电动门控制链路" ;
+    qtl:testTargetStatus "SUGGESTED_GROUNDED" ;
+    qtl:testDescStatus "MISSING" ;
+    qtl:testChunkIds "door_close_doc:3" .
+
+#################################################################
+# OntologyMeasure
+#################################################################
+
+qtl:OntologyMeasure_M001 a qtl:OntologyMeasure ;
+    qtl:measureId "M001" ;
+    qtl:measureName "更换电源管理芯片" ;
+    qtl:measureNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureDesc "更换失效的电源管理芯片并复测供电输出。" ;
+    qtl:measureDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureChunkIds "black_screen_doc:4" .
+
+qtl:OntologyMeasure_M002 a qtl:OntologyMeasure ;
+    qtl:measureId "M002" ;
+    qtl:measureName "修复或重新插接电源连接器" ;
+    qtl:measureNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureDesc "重新插紧连接器，修复退针或更换损坏端子。" ;
+    qtl:measureDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureChunkIds "black_screen_doc:4" .
+
+qtl:OntologyMeasure_M003 a qtl:OntologyMeasure ;
+    qtl:measureId "M003" ;
+    qtl:measureName "更换显示屏模组" ;
+    qtl:measureNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureDesc "使用合格显示屏模组替换故障件。" ;
+    qtl:measureDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureChunkIds "black_screen_doc:5" .
+
+qtl:OntologyMeasure_M004 a qtl:OntologyMeasure ;
+    qtl:measureId "M004" ;
+    qtl:measureName "维修背光驱动电路" ;
+    qtl:measureNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureDesc "更换背光驱动相关失效器件并验证亮度恢复。" ;
+    qtl:measureDescStatus "EXTRACTED_INFERRED" ;
+    qtl:measureChunkIds "black_screen_doc:5" .
+
+qtl:OntologyMeasure_M005 a qtl:OntologyMeasure ;
+    qtl:measureId "M005" ;
+    qtl:measureName "修复或更换LVDS屏线" ;
+    qtl:measureNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureDesc "重新插接、固定或更换LVDS屏线。" ;
+    qtl:measureDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureChunkIds "black_screen_doc:6" .
+
+qtl:OntologyMeasure_M006 a qtl:OntologyMeasure ;
+    qtl:measureId "M006" ;
+    qtl:measureName "维修主板短路点" ;
+    qtl:measureNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureDesc "定位短路网络并维修失效器件或线路。" ;
+    qtl:measureDescStatus "EXTRACTED_INFERRED" ;
+    qtl:measureChunkIds "black_screen_doc:6" .
+
+qtl:OntologyMeasure_M007 a qtl:OntologyMeasure ;
+    qtl:measureId "M007" ;
+    qtl:measureName "重新刷写系统镜像" ;
+    qtl:measureNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureDesc "刷写完整系统镜像并执行启动验证。" ;
+    qtl:measureDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureChunkIds "black_screen_doc:7" .
+
+qtl:OntologyMeasure_M101 a qtl:OntologyMeasure ;
+    qtl:measureId "M101" ;
+    qtl:measureName "更换门锁执行器" ;
+    qtl:measureNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureDesc "更换失效执行器并验证锁止动作。" ;
+    qtl:measureDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureChunkIds "door_close_doc:4" .
+
+qtl:OntologyMeasure_M102 a qtl:OntologyMeasure ;
+    qtl:measureId "M102" ;
+    qtl:measureName "调整锁扣位置" ;
+    qtl:measureNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureDesc "按装配基准调整锁扣位置并验证锁止。" ;
+    qtl:measureDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureChunkIds "door_close_doc:4" .
+
+qtl:OntologyMeasure_M103 a qtl:OntologyMeasure ;
+    qtl:measureId "M103" ;
+    qtl:measureName "校正或更换车门铰链" ;
+    qtl:measureNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureDesc "修复变形铰链并调整车门间隙。" ;
+    qtl:measureDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureChunkIds "door_close_doc:5" .
+
+qtl:OntologyMeasure_M104 a qtl:OntologyMeasure ;
+    qtl:measureId "M104" ;
+    qtl:measureName "调整或更换密封条" ;
+    qtl:measureNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureDesc "重新装配或更换干涉密封条。" ;
+    qtl:measureDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureChunkIds "door_close_doc:5" .
+
+qtl:OntologyMeasure_M105 a qtl:OntologyMeasure ;
+    qtl:measureId "M105" ;
+    qtl:measureName "更换闭合传感器" ;
+    qtl:measureNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureDesc "更换失效闭合传感器并验证反馈信号。" ;
+    qtl:measureDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureChunkIds "door_close_doc:6" .
+
+qtl:OntologyMeasure_M106 a qtl:OntologyMeasure ;
+    qtl:measureId "M106" ;
+    qtl:measureName "升级或重刷车门控制模块软件" ;
+    qtl:measureNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureDesc "升级或重刷控制模块软件并执行功能验证。" ;
+    qtl:measureDescStatus "EXTRACTED_INFERRED" ;
+    qtl:measureChunkIds "door_close_doc:7" .
+
+qtl:OntologyMeasure_M107 a qtl:OntologyMeasure ;
+    qtl:measureId "M107" ;
+    qtl:measureName "修复门锁线束连接" ;
+    qtl:measureNameStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureDesc "修复线束插接、端子虚接或导通异常。" ;
+    qtl:measureDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:measureChunkIds "door_close_doc:7" .
+
+#################################################################
+# SymptomTransition
+#################################################################
+
+qtl:SymptomTransition_TR001 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S001 ;
+    qtl:transitionTarget qtl:FailureSymptom_S002 ;
+    qtl:testId qtl:OntologyTest_T001 ;
+    qtl:condition "车机上电后仍无显示。" ;
+    qtl:conditionStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionDesc "从用户可见黑屏进入上电后黑屏状态确认。" ;
+    qtl:transitionDescStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionChunkIds "black_screen_doc:1" .
+
+qtl:SymptomTransition_TR002 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S002 ;
+    qtl:transitionTarget qtl:FailureSymptom_S004 ;
+    qtl:testId qtl:OntologyTest_T002 ;
+    qtl:condition "供电端电压异常。" ;
+    qtl:conditionStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionDesc "通过供电测量定位到车机供电异常。" ;
+    qtl:transitionDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionChunkIds "black_screen_doc:2" .
+
+qtl:SymptomTransition_TR003 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S002 ;
+    qtl:transitionTarget qtl:FailureSymptom_S003 ;
+    qtl:testId qtl:OntologyTest_T003 ;
+    qtl:condition "供电正常但屏幕或显示链路表现异常。" ;
+    qtl:conditionStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionDesc "通过显示链路检查定位到屏幕显示链路异常。" ;
+    qtl:transitionDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionChunkIds "black_screen_doc:2" .
+
+qtl:SymptomTransition_TR004 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S002 ;
+    qtl:transitionTarget qtl:FailureSymptom_S005 ;
+    qtl:testId qtl:OntologyTest_T004 ;
+    qtl:condition "启动日志存在启动失败或系统崩溃记录。" ;
+    qtl:conditionStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionDesc "通过日志读取定位到软件启动异常。" ;
+    qtl:transitionDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionChunkIds "black_screen_doc:3" .
+
+qtl:SymptomTransition_TR005 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S004 ;
+    qtl:transitionTarget qtl:FailureSymptom_S006 ;
+    qtl:testId qtl:OntologyTest_T005 ;
+    qtl:condition "电源管理芯片输出缺失或异常。" ;
+    qtl:conditionStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionDesc "供电异常继续定位到电源管理芯片损坏。" ;
+    qtl:transitionDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionChunkIds "black_screen_doc:4" .
+
+qtl:SymptomTransition_TR006 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S004 ;
+    qtl:transitionTarget qtl:FailureSymptom_S007 ;
+    qtl:testId qtl:OntologyTest_T006 ;
+    qtl:condition "电源连接器松脱、退针或插接不到位。" ;
+    qtl:conditionStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionDesc "通过插接状态检查定位到电源连接器松脱。" ;
+    qtl:transitionDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionChunkIds "black_screen_doc:4" .
+
+qtl:SymptomTransition_TR007 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S004 ;
+    qtl:transitionTarget qtl:FailureSymptom_S011 ;
+    qtl:testId qtl:OntologyTest_T010 ;
+    qtl:condition "主板关键供电网络对地阻抗异常偏低。" ;
+    qtl:conditionStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionDesc "供电异常进一步定位到主板短路。" ;
+    qtl:transitionDescStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionChunkIds "black_screen_doc:6" .
+
+qtl:SymptomTransition_TR008 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S003 ;
+    qtl:transitionTarget qtl:FailureSymptom_S008 ;
+    qtl:testId qtl:OntologyTest_T007 ;
+    qtl:condition "替换良品显示屏后恢复显示。" ;
+    qtl:conditionStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionDesc "显示链路异常进一步定位到显示屏模组损坏。" ;
+    qtl:transitionDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionChunkIds "black_screen_doc:5" .
+
+qtl:SymptomTransition_TR009 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S003 ;
+    qtl:transitionTarget qtl:FailureSymptom_S009 ;
+    qtl:testId qtl:OntologyTest_T008 ;
+    qtl:condition "背光驱动输出或使能信号异常。" ;
+    qtl:conditionStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionDesc "显示链路异常进一步定位到背光驱动电路失效。" ;
+    qtl:transitionDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionChunkIds "black_screen_doc:5" .
+
+qtl:SymptomTransition_TR010 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S003 ;
+    qtl:transitionTarget qtl:FailureSymptom_S010 ;
+    qtl:testId qtl:OntologyTest_T009 ;
+    qtl:condition "LVDS屏线松动、破损或端子接触异常。" ;
+    qtl:conditionStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionDesc "显示链路异常进一步定位到LVDS屏线接触不良。" ;
+    qtl:transitionDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionChunkIds "black_screen_doc:6" .
+
+qtl:SymptomTransition_TR011 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S005 ;
+    qtl:transitionTarget qtl:FailureSymptom_S012 ;
+    qtl:testId qtl:OntologyTest_T011 ;
+    qtl:condition "系统镜像完整性校验失败。" ;
+    qtl:conditionStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionDesc "软件启动异常进一步定位到系统镜像损坏。" ;
+    qtl:transitionDescStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionChunkIds "black_screen_doc:7" .
+
+qtl:SymptomTransition_TR101 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S101 ;
+    qtl:transitionTarget qtl:FailureSymptom_S102 ;
+    qtl:testId qtl:OntologyTest_T101 ;
+    qtl:condition "车门关闭后无法锁止。" ;
+    qtl:conditionStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionDesc "从车门无法关闭进入门锁未锁止诊断。" ;
+    qtl:transitionDescStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionChunkIds "door_close_doc:1" .
+
+qtl:SymptomTransition_TR102 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S101 ;
+    qtl:transitionTarget qtl:FailureSymptom_S103 ;
+    qtl:testId qtl:OntologyTest_T103 ;
+    qtl:condition "车门关闭轨迹或间隙异常。" ;
+    qtl:conditionStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionDesc "通过车门位置和锁扣相对位置检查进入车门姿态异常诊断。" ;
+    qtl:transitionDescStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionChunkIds "door_close_doc:2" .
+
+qtl:SymptomTransition_TR103 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S101 ;
+    qtl:transitionTarget qtl:FailureSymptom_S104 ;
+    qtl:testId qtl:OntologyTest_T112 ;
+    qtl:conditionStatus "MISSING" ;
+    qtl:transitionDesc "存在电动门动作不完整或控制链路异常迹象。" ;
+    qtl:transitionDescStatus "SUGGESTED_GROUNDED" ;
+    qtl:transitionChunkIds "door_close_doc:3" .
+
+qtl:SymptomTransition_TR104 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S102 ;
+    qtl:transitionTarget qtl:FailureSymptom_S105 ;
+    qtl:testId qtl:OntologyTest_T105 ;
+    qtl:condition "执行器无动作或动作无力。" ;
+    qtl:conditionStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionDesc "门锁未锁止进一步定位到门锁执行器损坏。" ;
+    qtl:transitionDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionChunkIds "door_close_doc:4" .
+
+qtl:SymptomTransition_TR105 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S102 ;
+    qtl:transitionTarget qtl:FailureSymptom_S109 ;
+    qtl:testId qtl:OntologyTest_T109 ;
+    qtl:condition "传感器反馈与实际闭合状态不一致。" ;
+    qtl:conditionStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionDesc "门锁未锁止进一步定位到闭合传感器失效。" ;
+    qtl:transitionDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionChunkIds "door_close_doc:6" .
+
+qtl:SymptomTransition_TR106 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S102 ;
+    qtl:transitionTarget qtl:FailureSymptom_S111 ;
+    qtl:testId qtl:OntologyTest_T111 ;
+    qtl:condition "门锁或传感器线束存在松动、虚接或导通异常。" ;
+    qtl:conditionStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionDesc "门锁未锁止进一步定位到线束接触不良。" ;
+    qtl:transitionDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionChunkIds "door_close_doc:7" .
+
+qtl:SymptomTransition_TR107 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S103 ;
+    qtl:transitionTarget qtl:FailureSymptom_S106 ;
+    qtl:testId qtl:OntologyTest_T106 ;
+    qtl:condition "锁扣位置偏离装配基准。" ;
+    qtl:conditionStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionDesc "车门姿态异常进一步定位到锁扣位置偏移。" ;
+    qtl:transitionDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionChunkIds "door_close_doc:4" .
+
+qtl:SymptomTransition_TR108 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S103 ;
+    qtl:transitionTarget qtl:FailureSymptom_S107 ;
+    qtl:testId qtl:OntologyTest_T107 ;
+    qtl:condition "铰链变形或车门间隙异常。" ;
+    qtl:conditionStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionDesc "车门姿态异常进一步定位到铰链变形。" ;
+    qtl:transitionDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionChunkIds "door_close_doc:5" .
+
+qtl:SymptomTransition_TR109 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S103 ;
+    qtl:transitionTarget qtl:FailureSymptom_S108 ;
+    qtl:testId qtl:OntologyTest_T108 ;
+    qtl:condition "密封条装配异常、隆起或硬化造成明显干涉。" ;
+    qtl:conditionStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionDesc "车门姿态异常进一步定位到密封条干涉。" ;
+    qtl:transitionDescStatus "EXTRACTED_EXPLICIT" ;
+    qtl:transitionChunkIds "door_close_doc:5" .
+
+qtl:SymptomTransition_TR110 a qtl:SymptomTransition ;
+    qtl:transitionSource qtl:FailureSymptom_S104 ;
+    qtl:transitionTarget qtl:FailureSymptom_S110 ;
+    qtl:testId qtl:OntologyTest_T110 ;
+    qtl:condition "存在软件逻辑、标定或控制异常故障码。" ;
+    qtl:conditionStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionDesc "电动门控制异常进一步定位到车门控制模块软件异常。" ;
+    qtl:transitionDescStatus "EXTRACTED_INFERRED" ;
+    qtl:transitionChunkIds "door_close_doc:7" .
+
+#################################################################
+# Deterministically rebuilt FaultTree nodes
+#################################################################
+
+qtl:FaultTree_FT_001 a qtl:FaultTree ;
+    qtl:treeId "FT_001" ;
+    qtl:treeName "车机黑屏故障树" ;
+    qtl:treeDesc "由start节点车机黑屏沿SymptomTransition确定性BFS重建得到。" ;
+    qtl:applicableScope "车载信息娱乐系统黑屏诊断" ;
+    qtl:version "demo-2026-05-20" ;
+    qtl:hasSymptom qtl:FailureSymptom_S001 ,
+                   qtl:FailureSymptom_S002 ,
+                   qtl:FailureSymptom_S003 ,
+                   qtl:FailureSymptom_S004 ,
+                   qtl:FailureSymptom_S005 ,
+                   qtl:FailureSymptom_S006 ,
+                   qtl:FailureSymptom_S007 ,
+                   qtl:FailureSymptom_S008 ,
+                   qtl:FailureSymptom_S009 ,
+                   qtl:FailureSymptom_S010 ,
+                   qtl:FailureSymptom_S011 ,
+                   qtl:FailureSymptom_S012 .
+
+qtl:FaultTree_FT_002 a qtl:FaultTree ;
+    qtl:treeId "FT_002" ;
+    qtl:treeName "车门无法关闭故障树" ;
+    qtl:treeDesc "由start节点车门无法关闭沿SymptomTransition确定性BFS重建得到。" ;
+    qtl:applicableScope "车门关闭与锁止异常诊断" ;
+    qtl:version "demo-2026-05-20" ;
+    qtl:hasSymptom qtl:FailureSymptom_S101 ,
+                   qtl:FailureSymptom_S102 ,
+                   qtl:FailureSymptom_S103 ,
+                   qtl:FailureSymptom_S104 ,
+                   qtl:FailureSymptom_S105 ,
+                   qtl:FailureSymptom_S106 ,
+                   qtl:FailureSymptom_S107 ,
+                   qtl:FailureSymptom_S108 ,
+                   qtl:FailureSymptom_S109 ,
+                   qtl:FailureSymptom_S110 ,
+                   qtl:FailureSymptom_S111 .

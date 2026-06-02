@@ -1,0 +1,60 @@
+[project]
+name = "ft-guided-diag-agent"
+version = "0.1.0"
+description = "Fault-tree guided diagnostic agent with HITL, tool calling, RAG, replay, and preference data loops."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "chromadb>=0.5.23",
+    "langchain>=0.3.13",
+    "langchain-openai>=0.2.14",
+    "langgraph>=0.2.60",
+    "openai>=1.58.1",
+    "pandas>=2.2.3",
+    "pydantic>=2.10.4",
+    "pypdf>=5.1.0",
+    "python-dotenv>=1.0.1",
+    "rdflib>=7.1.1",
+    "streamlit>=1.41.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.4",
+    "ruff>=0.8.4",
+]
+training = [
+    "accelerate>=1.2.1",
+    "datasets>=3.2.0",
+    "peft>=0.14.0",
+    "transformers>=4.47.1",
+    "trl>=0.13.0",
+]
+
+[project.scripts]
+ft-diag-export-datasets = "ft_diag_agent.eval:main"
+ft-diag-eval = "ft_diag_agent.eval:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ft_diag_agent"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"app/streamlit_app.py" = ["E402"]
