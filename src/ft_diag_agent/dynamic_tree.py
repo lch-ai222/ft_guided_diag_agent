@@ -3,6 +3,7 @@ from __future__ import annotations
 from hashlib import sha1
 
 from ft_diag_agent.models import (
+    CaseOnlyHypothesisStatus,
     CoverageStatus,
     DiagnosisMode,
     DiagnosticState,
@@ -135,14 +136,17 @@ def _candidate_start_symptom(state: DiagnosticState) -> str:
 def _candidate_failure_domain(state: DiagnosticState) -> str | None:
     if state.work_order and state.work_order.business_domain:
         return state.work_order.business_domain
-    if state.case_only_hypotheses:
-        return state.case_only_hypotheses[0].system_area
+    for hypothesis in state.case_only_hypotheses:
+        if hypothesis.status != CaseOnlyHypothesisStatus.REFUTED:
+            return hypothesis.system_area
     return None
 
 
 def _candidate_root_hypotheses(state: DiagnosticState) -> list[str]:
     roots: list[str] = []
     for hypothesis in state.case_only_hypotheses:
+        if hypothesis.status == CaseOnlyHypothesisStatus.REFUTED:
+            continue
         parts = [
             hypothesis.system_area,
             hypothesis.component or "",

@@ -73,10 +73,11 @@ flowchart TD
 | Rework Guard | `rework_guard.py` | 识别返修、前次误判、无效处置和需避免的重复动作 |
 | Tool Registry | `tools.py` | 统一工具协议、HITL 工具、RAG/故障树/生产接口 stub |
 | Gate | `gate.py` | 确定性风险门禁 |
+| Diagnostic Explain | `diagnostic_explain.py` | 将 `DiagnosticState` 转换为诊断时间线、Planner/Gate 因果解释和证据摘要 |
 | Report | `report.py` | Markdown/JSON 报告生成 |
 | Replay | `replay.py` | 诊断轨迹 JSONL 写入 |
 | Eval/Dataset | `eval.py` | 导出 SFT/preference/eval 数据集 |
-| Tree Evolution | `dynamic_tree.py` / `tree_generation.py` / 未来 `tree_proposals.py` | 从 case-only、replay 和批量文档中形成 TreeProposal、聚类、评测与审核发布入口 |
+| Tree Evolution | `dynamic_tree.py` / `tree_generation.py` / `tree_generation_eval.py` / `tree_proposals.py` | 从 case-only、replay、批量文档和已有树漂移中形成 TreeProposal、聚类、抽取质量评测、审核与发布入口 |
 | UI | `app/streamlit_app.py` | Streamlit 工作台 |
 
 ## 5. 关键数据模型
@@ -244,7 +245,7 @@ Planner 输出的下一步动作。
 - `supporting_evidence_ids`
 - `contradicting_evidence_ids`
 - `next_check_ids`
-- `status`
+- `status`：`OPEN`、`SUPPORTED`、`REFUTED` 或 `NEEDS_EVIDENCE`
 
 `ExploratoryDiagnosticPlan`：
 
@@ -255,6 +256,9 @@ Planner 输出的下一步动作。
 - `next_action_ids`
 - `evidence_ids`
 - `risk_notes`
+- `iteration`
+- `completed_action_ids`
+- `stopped_reason`
 
 `ExploratoryFinding`：
 
@@ -371,20 +375,49 @@ Planner 输出的下一步动作。
 - 已实现第一入口：`src/ft_diag_agent/tree_generation.py`
 - 审核 store：`src/ft_diag_agent/tree_proposals.py`
 - Tree Proposal Eval：`src/ft_diag_agent/tree_proposal_eval.py`
+- Tree Generation Extraction Eval：`src/ft_diag_agent/tree_generation_eval.py`
+- 跨 proposal 聚合：`src/ft_diag_agent/tree_proposal_analytics.py`
+- 晋升预审：`src/ft_diag_agent/tree_proposal_precheck.py`
+- 审核视图辅助：`src/ft_diag_agent/tree_proposal_view.py`
 - Streamlit TreeProposal 审核页。
+- 第二入口：开发态 case-only `FaultTreeGenerationRequest` 和跨 runs `FaultTreeRequestCluster` 可写入/更新 `DRAFT_TREE` proposal。
 
 当前审核边界：
 
 - 支持 proposal upsert、case link、eval result、review log 和 artifact snapshot。
+- 支持从 `FaultTreeGenerationRequest` 生成 `source_type=WORK_ORDER_TRIGGER` 的 proposal，并写入去重后的 `TreeProposalCaseLink`。
+- 支持从 `FaultTreeRequestCluster` 生成 `source_type=DYNAMIC_CLUSTER` 的 proposal，选中聚类或批量聚类均使用稳定 proposal id 更新同一记录。
+- `TreeProposal.source_request_id` / `source_cluster_id` 用于追溯第二入口来源。
+- `TreeProposal.proposal_kind` 区分 `NEW_TREE` 与 `TREE_CHANGE`。`NEW_TREE` 仍用于无树覆盖新增树；`TREE_CHANGE` 用于已有 Released/Gray/Draft Tree 的分支、检测项、阈值、condition、executor、scope 或版本化 patch 变更。
+- `DiagnosticState.tree_change_proposal` 记录 covered case 中由工艺漂移、检测项不可执行、阈值变化、反复反证、返修或前次误判触发的已有树变更候选。它会进入 report/replay，但不改变 Gate，不写 TTL。
 - 支持 `DRAFT_TREE -> CANDIDATE_TREE`、`REQUEST_CHANGES` 保持当前状态、`REJECT` 进入 `REJECTED`。
-- 第一版不支持 `CANDIDATE_TREE -> GRAY_TREE` 或 `GRAY_TREE -> RELEASED_TREE`。
-- 审核日志不等于正式 release manifest；发布链路和 rollback metadata 仍待实现。
+- 支持确定性晋升预审：输出 `READY_FOR_REVIEW`、`NEEDS_MORE_EVIDENCE`、`BLOCKED` 或 `NOT_APPLICABLE`。
+- 预审会检查 start/root/test、source case、evidence、artifact、Tree Proposal Eval unsafe findings、Tree Generation Extraction Eval unsafe findings、support case count 和 evidence binding rate。
+- 预审可消费 `TreeProposalAggregateReport`，把跨 proposal 聚合 blocker/warning/satisfied/recommended action 合并进单 proposal 预审结果。
+- 跨 proposal 聚合口径：
+  - `phenomenon_bucket`：同类现象 bucket 内 proposal 数、支持 case、反证 case 和人工确认率。
+  - `root_cause_family`：同一候选根因族的 proposal 覆盖、支持/反证 case、人工确认率和风险计数。
+  - `repeated_test`：重复出现的 candidate/useful test、支持/反证 case、人工确认率和风险计数。
+  - 高风险反证：来自 `REFUTES` case link、`human_confirmed=False`、eval unsafe findings、拒绝/请求修改审核日志和高风险 risk notes。
+- 聚合预审只辅助人工审核；不会自动晋升状态，不写生产 TTL，不影响 Gate。
+- 预审结果只辅助人工审核，不自动晋升；人工审核日志会保存 `precheck_result` 快照。
+- 审核页必须优先展示人类可读 proposed tree：有 artifact 时展示 L1/L2/L3、字段状态和 transition/test；没有 artifact 时展示 `DISCOVERY_ONLY` skeleton 并标明不能晋升。
+- 审核页展示 8 步流程状态条：来源输入、DRAFT 草案、L1/L2/L3 结构、HITL 补全、Proposal Eval、人工审核、Replay/Shadow、生产 TTL 发布。
+- `src/ft_diag_agent/tree_admission.py` 提供准入材料包：`GRAY` 准入检查 artifact、source case/evidence、结构 eval、shadow eval、候选审核日志和适用范围；`RELEASED` 准入检查 release artifact、manifest、rollback、TTL diff、`tree_generation_extraction_v1`、shadow/golden 记录、Gray 审核日志和正式发布签核。
+- 审核页 `准入材料` tab 展示同一套 admission package，包含材料名称、状态、来源 ID/path、阻塞/警告细节和建议动作；晋升预审也消费这套 package，避免 UI 与 precheck 规则漂移。
+- `CANDIDATE_TREE -> GRAY_TREE` 预审会继承 DRAFT 结构预审，要求 `DRAFT_TREE -> CANDIDATE_TREE` 专家审核日志，并要求通过 `tree_proposal_replay_shadow_v1` replay-based shadow eval；缺失或存在 unsafe findings 时阻塞。
+- `GRAY_TREE -> RELEASED_TREE` 预审会检查 release artifact、release manifest、rollback metadata、TTL diff、generated TTL preview、`tree_generation_extraction_v1`、shadow eval 通过记录、`CANDIDATE_TREE -> GRAY_TREE` 审核日志和专家正式发布签核。
+- `src/ft_diag_agent/released_tree_registry.py` 提供 Released Tree registry、生产 TTL 写入执行和 rollback 演练：`RELEASED_TREE` proposal 在 release artifact、正式签核、rollback、`tree_generation_extraction_v1`、runtime-compatible TTL preview 和 tree_id 唯一性均通过后，写入 `data/released_trees/registry.jsonl` 的 `READY_FOR_TTL_WRITE` 记录，并把审计结果写入 `ttl_audit_results.jsonl`。
+- 生产 TTL 写入动作必须消费已有 `READY_FOR_TTL_WRITE` registry entry，复核 release artifact TTL hash 和生产 TTL parse/tree_id 去重，写入前在 `data/released_trees/backups/` 生成备份，成功后追加 generated TTL preview 并把 registry entry 标记为 `REGISTERED`；rollback dry-run 只验证备份可恢复，正式 rollback 从备份恢复 TTL 并标记 `ROLLED_BACK`。
+- 第一版允许在 shadow eval 无阻塞后人工审核 `CANDIDATE_TREE -> GRAY_TREE`，也允许在发布材料齐全后提交 `GRAY_TREE -> RELEASED_TREE` 人工审核；受控写入会修改配置的生产 TTL 文件，但不自动改变 Gate 或分类器运行时缓存。
+- 审核日志不等于正式 release manifest；release artifact 位于 `data/tree_proposals/artifacts/{proposal_id}/release/`，包含 `manifest.json`、`rollback_metadata.json`、`generated_ttl_preview.ttl`、`ttl_diff.md` 和 `release_artifact.json`。
 - Tree Proposal Eval 第一版为确定性指标：schema validity、validation errors、start/root/test/transition counts、root-to-test coverage、missing test bindings、evidence binding rate、HITL confirmation rate、pending HITL count 和 unsafe blockers。
-- 第一版 eval 不自动晋升 proposal，不执行诊断 replay，也不使用 LLM judge。
+- Tree Generation Extraction Eval 第一版为 `tree_generation_extraction_v1`：ontology structure、field completeness、source fact recall、grounding precision、hallucination rate、path coherence、test actionability、contradiction count 和 duplicate semantic rate。批量生成完成后自动写入 eval result；DRAFT 晋升必须已有该结果。结构、链路和幻觉 blocker 会阻塞，source recall 在 v1 仅作为 warning。
+- replay-based shadow eval 第一版为离线 simulation：读取 `runs/*.jsonl`，按 proposal 的 start/root/test/evidence 与 replay 内容匹配，输出相关 replay 数、root/test 支持率、证据命中率、失败案例和 unsafe findings；它不执行线上灰度、不调用 LLM judge、不允许候选树影响生产 Gate。
 
 规划模块：
 
-- replay-based Tree Proposal Eval、发布前审计和 release manifest。
+- 正式 shadow/gray 服务、发布后监控、自动触发回滚策略和生产 registry 服务化。
 
 ### 5.10 批量文档树生成模型
 
@@ -475,7 +508,8 @@ Planner 输出的下一步动作。
 - draft entity 的 `properties.needs_generation_hitl` / `properties.hitl_reasons` 和 `generation_hitl_items(artifact)` 用于生成树生成 HITL 补全候选列表。
 - 当前已实现 HITL 候选扫描、专家建议选项生成、UI 展示和人工确认写回。建议对象写入 `TreeGenerationHitlSuggestion`，人工决策写入 `TreeGenerationHitlDecision`；确认写回后字段状态推进为 `CONFIRMED`，并重跑结构校验和确定性 BFS 预览。
 - HITL 建议生成顺序必须是：当前输入资料原文 chunk 优先，RAG 命中的 SOP/FMEA/维修手册/历史工单次之，领域/工艺/维修专家知识只做术语和检查口径补强。若原文和 RAG 都不足，LLM 应返回空建议并提示补资料，而不是编造可确认值。
-- 尚未实现 TreeProposal 审核日志持久化、正式 TTL 发布、release manifest 和 rollback metadata。
+- 已实现 release manifest、rollback metadata 和 TTL diff 审核材料；尚未实现正式 TTL 发布、Released Tree registry、
+  发布后监控和自动回滚执行。
 - Streamlit 生成时通过 progress callback 展示当前阶段和耗时；生成完成后在“阶段耗时”页签展示 `stage_timings`。
 - Tree Generation job 列表按 `updated_at/created_at` 倒序展示；生成完成后自动选中新 job，表单展示本次 LLM enable/provider/model 配置，避免历史低置信任务被误认为当前运行结果。
 
@@ -668,6 +702,11 @@ DeepSeek 配置：
 输入：
 
 - `corrected_fault_tree_instances.ttl`
+- `data/released_trees/registry.jsonl`：Released Tree registry 记录，包含 `READY_FOR_TTL_WRITE / REGISTERED / ROLLED_BACK` 状态；清理前应确认是否仍需生产发布审计追溯。
+- `data/released_trees/ttl_audit_results.jsonl`：生产 TTL 写入 READY 审计历史，可按 proposal 追溯或清理。
+- `data/released_trees/ttl_write_results.jsonl`：受控生产 TTL 写入执行历史，记录 backup path、TTL hash 和阻塞项。
+- `data/released_trees/ttl_rollback_results.jsonl`：rollback dry-run / execute 历史，记录恢复来源和阻塞项。
+- `data/released_trees/backups/`：生产 TTL 写入前备份目录；可在确认不需要回滚演练和发布审计后清理。
 
 输出：
 
@@ -785,11 +824,13 @@ DeepSeek 配置：
   - 根据路径深度、证据强度、根因等计算优先级。
 - 若 `diagnosis_mode=CASE_ONLY_EXPLORATORY`：
   - `DiagnosticEngine.plan_case_only_exploration()` 调用 `CaseOnlyPlanner`。
-  - `CaseOnlyPlanner` 输出 `CaseOnlyHypothesis`、`ExploratoryDiagnosticPlan` 和 `CASE_ONLY_HITL` 动作。
+  - 首轮 `CaseOnlyPlanner` 输出 `CaseOnlyHypothesis`、`ExploratoryDiagnosticPlan` 和 `CASE_ONLY_HITL` 动作。
+  - 后续人工提交检查结果后，Planner 会根据 `ExploratoryFinding` 更新假设状态，抑制已执行检查，并围绕 `OPEN/NEEDS_EVIDENCE` 假设生成下一轮动作。
   - 动作来源为 RAG 历史/文档证据 + 可选 LLM planner + 领域规则兜底。
   - 动作会围绕假设生成，例如动力受限场景下的 BMS 保护性降额、高压互锁不稳定、VCU 扭矩请求链路异常。
   - 每个动作带 `planner_source`、`evidence_ids`、`confidence`、`risk_notes`，UI 会展示其来源和不可放行约束。
-  - 人工提交后会生成 `ExploratoryFinding`，用于下一轮假设排序和动作生成，但不会推进故障树节点。
+  - 人工提交后会生成 `ExploratoryFinding`，用于下一轮假设排序和动作生成，但不会推进故障树节点，也不会直接修改未审核的新树。
+  - `FaultTreeGenerationRequest` / `TreeProposal` 是 case-only 全程探索证据的后置固化输入；已 `REFUTED` 的假设不会作为候选 root cause family。
 - 若存在 `ReworkRiskAssessment.recommended_checks`：
   - `DiagnosticEngine.plan()` 会先生成 `REWORK_COUNTER_CHECK` 动作。
   - 这些动作的 `planner_source=REWORK_GUARD`，`tool_name=human_input`，用于优先确认返修/前次误判反证。
@@ -994,7 +1035,11 @@ Replay 导出指标：
 - `EvalCaseResult`：单条诊断输出与命中结果。
   - 输出字段：预测路由、覆盖状态、活动树、活动节点、Gate、Planner 动作、case-only 假设。
   - 命中字段：路由、覆盖判断、树选择、叶子根因、Gate、case-only 假设、下一动作、生产 Gate 安全、guardrail 误路由。
+  - `replay_trace` 保存该 eval case 的 replay JSON 摘要，供失败复盘联动。
 - `EvalSuiteSummary`：批量评测汇总。
+- `EvalRunMetadata` / `EvalRunArtifact`：版本化 eval run 元数据、summary 和混淆报告。
+- `EvalConfusionReport`：按树、节点和 test 三个维度聚合 expected/predicted 混淆。
+- `EvalRunComparison`：baseline/current 指标 delta、关键回归、普通 warning、新增失败和已修复 case。
 
 诊断评测运行器：
 
@@ -1002,6 +1047,10 @@ Replay 导出指标：
 - `load_labeled_eval_cases_v1()`：读取 `data/raw_docs/diagnostic_eval_labeled_cases_v1/diagnostic_eval_cases_v1.jsonl` 的 38 条标注用例。构造 `WorkOrder` 时不会写入 `expected_tree_id` / `expected_leaf_symptom_id`，避免标签泄漏。
 - `run_eval_cases(engine, cases)`：直接调用真实 `DiagnosticEngine` 跑批量诊断。
 - `write_eval_outputs(summary, output_dir)`：写入评测摘要和明细。
+- `write_eval_run(summary, eval_runs_dir, suite)`：写入 `datasets/eval_runs/{run_id}/` 版本化 run。
+- `list_eval_runs(eval_runs_dir)` / `load_eval_run(eval_runs_dir, run_id)`：列出并加载历史 run。
+- `compare_eval_runs(baseline, current)`：计算指标 delta、回归告警和 affected cases。
+- `build_eval_confusion(results)`：生成树/节点/test 维度混淆分析。
 
 诊断评测输出：
 
@@ -1011,6 +1060,13 @@ Replay 导出指标：
 - `datasets/eval_results_labeled_v1/diagnostic_eval_summary.json`
 - `datasets/eval_results_labeled_v1/diagnostic_eval_results.jsonl`
 - `datasets/eval_results_labeled_v1/diagnostic_eval_details.jsonl`
+- `datasets/eval_runs/{run_id}/run_metadata.json`
+- `datasets/eval_runs/{run_id}/summary.json`
+- `datasets/eval_runs/{run_id}/results.jsonl`
+- `datasets/eval_runs/{run_id}/details.jsonl`
+- `datasets/eval_runs/{run_id}/confusion_tree.json`
+- `datasets/eval_runs/{run_id}/confusion_node.json`
+- `datasets/eval_runs/{run_id}/confusion_test.json`
 
 `diagnostic_eval_details.jsonl` 面向失败分析，包含：
 
@@ -1022,6 +1078,7 @@ Replay 导出指标：
 - 实际 Planner 动作。
 - 已执行检测。
 - 证据摘要。
+- replay trace 摘要。
 - `failure_tags` 和 `short_error_reason`。
 
 诊断评测指标：
@@ -1039,12 +1096,16 @@ Replay 导出指标：
 - guardrail misroute count
 - wrong tree misdiagnosis count
 - group metrics：按 `TREE_COVERED_BLACK_SCREEN`、`TREE_COVERED_DOOR_CLOSE`、`NON_TREE_CASE_ONLY`、`ROUTING_GUARDRAIL` 分组。
+- baseline/current delta：对高越好指标计算提升/回归；对 `gate_mispass_count`、`guardrail_misroute_count`、`wrong_tree_misdiagnosis_count` 按低越好计算。
+- 关键回归：`production_gate_safety_rate` 下降、`gate_mispass_count` 上升或 `wrong_tree_misdiagnosis_count` 上升。
 
 边界：
 
 - 这是评测平台 v1，已经是真实诊断链路跑批，不只是 replay 统计。
 - labeled v1 已接入 38 条模拟标注工单，适合做路由、Gate、树内路径、case-only 和 guardrail 回归。
 - labeled v1 中非故障树 case-only 的业务闭环可以是 PASS，但生产 Gate 仍保持 GRAY/FAIL 安全边界；评测用 `expected_business_outcome` 与 `production_gate_safety_rate` 同时表达“诊断有用”和“不可生产误放行”。
+- 版本化 run 和混淆分析是离线评测产物，不改变诊断主链路、Planner 或 Gate。
+- Replay 联动第一版展示 eval case 的 replay 摘要和 JSON；更细粒度节点事件回放仍待后续把 replay 从整段 state snapshot 拆成事件流。
 
 训练边界：
 
@@ -1059,6 +1120,7 @@ Replay 导出指标：
 页面结构：
 
 - Sidebar 配置：
+  - 页面切换：`诊断工作台` / `树生成工作台`
   - TTL 路径
   - raw docs 目录
   - Chroma 目录
@@ -1068,7 +1130,13 @@ Replay 导出指标：
   - 诊断模式
   - LLM 开关
   - 重置诊断/清理缓存/重建文档索引
-- 主输入：
+- `诊断工作台`：
+  - 工单输入、诊断执行、HITL 检测录入、报告、Replay/Eval。
+  - 保留诊断过程中发现无树覆盖时的 TreeProposal 第二入口。
+  - covered case 出现工艺漂移、检测项不可执行、阈值变化、误判/返修信号时，展示“已有树变更候选”，可写入 `TREE_CHANGE` proposal。
+- `树生成工作台`：
+  - 批量文档 Tree Generation、树生成 HITL 补全、TreeProposal 审核、proposed tree 查看、生命周期状态和 Tree Proposal Eval。
+- 诊断主输入：
   - 选择 mock 工单
   - 粘贴工单文本，自由文本/Markdown/OCR 均可
   - 仅输入故障现象，会包装为 `WorkOrder` 后进入同一条 coverage 主链路
@@ -1078,6 +1146,19 @@ Replay 导出指标：
   - 证据与报告
   - Replay
   - Eval
+- 诊断概览优先展示 `diagnostic_explain.py` 生成的诊断时间线：
+  - 工单输入
+  - 分类与覆盖
+  - 路径或 case-only 探索计划
+  - Planner 检查动作
+  - 人工结果与证据
+  - Gate 判定
+  - 报告与 Replay
+- “证据与报告”优先展示：
+  - Planner / Evidence / Gate 因果解释：说明动作为什么被规划、关联证据是否支持、对 Gate 的影响。
+  - 证据摘要：按来源、支持对象、强度和解释展示。
+  - Gate 指标、阻塞项、待补充动作和风险提示。
+  - 原始 Gate JSON、报告 JSON、证据链 JSON 只作为折叠审计材料。
 - Tree Generation 页：
   - 批量文档选择和上传
   - 生成阶段状态流与阶段耗时
@@ -1086,8 +1167,12 @@ Replay 导出指标：
   - Mermaid 树结构图，边上展示绑定 test
 - TreeProposal 审核页：
   - proposal 列表和状态筛选
+  - 从来源输入到生产 TTL 发布的 8 步流程状态条
+  - 候选树结构：artifact 树图/节点表/transition 表，或无 artifact 的 `DISCOVERY_ONLY` skeleton
+  - 跨 Proposal 聚合：phenomenon bucket、root cause family、repeated test、人工确认有效率和高风险反证
   - proposal / review log / case link / eval result / artifact snapshot 查看
-  - 运行 Tree Proposal Eval，并展示最新指标和阻塞项
+  - 运行 Tree Generation Extraction Eval、Tree Proposal Eval 和 Replay/Shadow Eval，并展示最新指标和阻塞项
+  - 展示晋升预审结论、阻塞项、警告项和建议动作
   - 写入审核动作：批准、请求修改、拒绝
 
 Streamlit rerun 规避策略：
@@ -1096,11 +1181,13 @@ Streamlit rerun 规避策略：
 - RAG 对象使用 `st.cache_resource`。
 - 文档扫描数量使用 `st.cache_data`。
 - 当前诊断状态放在 `st.session_state["diag_state"]`。
+- 不要在同一轮渲染中修改已经实例化的 widget key。例如 `st.selectbox(..., key="tree_generation_job_select")` 创建后，按钮处理逻辑不能再写 `st.session_state["tree_generation_job_select"]`；应改写非 widget 状态如 `last_tree_generation_job_id`，再 `st.rerun()`。
 - 输入方式选择放在 form 外，避免切换 tab/radio 后 UI 不刷新。
 - 表单只包裹真正提交的输入区域。
 - unsupported 生产态在顶部显示错误提示；unsupported 开发态显示“探索性诊断，不可生产放行”。
 - case-only 探索动作的表单不再使用“进入目标分支”措辞，而是记录是否支持当前探索判断。
-- case-only 页面展示探索目标、计划摘要、疑似假设表格、已记录探索发现和下一步 HITL 检查。
+- case-only 页面展示探索目标、计划摘要、探索轮次、停止原因、疑似假设表格、支持/反驳证据数、已记录探索发现和下一步 HITL 检查。
+- 诊断解释层只读 `DiagnosticState`，不修改 Planner、Gate、Replay 或 TreeProposal 状态；任何 Gate 结论仍以 `gate.py` 的确定性结果为准。
 - Eval 页在未开始诊断和已有诊断状态时都可进入；可选择默认 mock 21 条或 labeled v1 38 条；只在点击“运行评测集”时批量执行，不随普通控件变化自动重跑；结果保存在 `st.session_state["eval_summary"]`。
 - Eval 页包含失败案例 drill-down：按失败分组和 `failure_tags` 过滤，展开单个 case 的 expected/predicted、Planner 动作、已执行检测和证据摘要。
 - Eval 写入按钮会同时保存 summary、results 和 details 三个文件，details 用于后续失败复盘和版本对比。
@@ -1129,6 +1216,10 @@ LangGraph 节点：
 - `plan_case_only`
 - `execute_auto_actions`
 - `gate`
+- `wait_hitl`
+- `gate_pass`
+- `gate_gray`
+- `gate_fail`
 - `report`
 - `replay`
 
@@ -1144,10 +1235,16 @@ LangGraph 节点：
 - `plan_case_only`
   - 若存在非 `human_input` 动作 -> `execute_auto_actions`
   - 当前全 HITL 策略下 -> `gate`
+- `gate`
+  - 若存在 blocking `human_input` 动作 -> `wait_hitl`
+  - `PASS` -> `gate_pass`
+  - `GRAY` -> `gate_gray`
+  - `FAIL` -> `gate_fail`
 
 当前边界：
 
 - 保持 `DiagnosticState` 作为唯一状态载体。
+- `DiagnosticState.workflow_phase`、`waiting_for_human`、`waiting_action_ids`、`workflow_notes` 用于显式表达当前诊断状态；UI 顶部直接展示该状态。
 - unsupported 生产态会直接进入 Gate/Report，不再执行取树、取证和 Planner 空路径。
 - unsupported 开发态会跳过故障树取树，直接进入 RAG/case-only 探索。
 - 暂未在图中执行自动生产工具，所有故障树 test 仍走 HITL。

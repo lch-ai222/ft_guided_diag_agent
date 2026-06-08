@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from hashlib import sha1
 
 from ft_diag_agent.case_only_planner import CaseOnlyPlanner
 from ft_diag_agent.classifier import WorkOrderClassifier
@@ -13,10 +14,15 @@ from ft_diag_agent.models import (
     DiagnosisMode,
     DiagnosticAction,
     DiagnosticState,
+    DiagnosticWorkflowPhase,
     EvidenceItem,
     ExecutedTest,
     ExploratoryFinding,
     IntakeRequest,
+    TreeChangeType,
+    TreeProposal,
+    TreeProposalKind,
+    TreeProposalStatus,
     WorkOrder,
 )
 from ft_diag_agent.planner import Planner
@@ -114,22 +120,29 @@ class DiagnosticEngine:
             state.intake = normalize_intake(state.intake_request, self.settings)
         if state.work_order and not state.classification:
             self.classify_work_order(state)
+        self._mark_workflow_phase(state, DiagnosticWorkflowPhase.CLASSIFIED)
         if state.coverage_decision and state.coverage_decision.status == CoverageStatus.UNSUPPORTED:
             if state.diagnosis_mode == DiagnosisMode.CASE_ONLY_EXPLORATORY:
+                self._mark_workflow_phase(state, DiagnosticWorkflowPhase.RETRIEVING_CONTEXT)
                 self.retrieve_evidence(state)
                 self.assess_rework_risk(state)
+                self._mark_workflow_phase(state, DiagnosticWorkflowPhase.PLANNING)
                 self.plan(state)
                 self.plan_case_only_exploration(state)
                 self.propose_dynamic_tree_request(state)
         else:
+            self._mark_workflow_phase(state, DiagnosticWorkflowPhase.RETRIEVING_CONTEXT)
             self.retrieve_tree(state)
             self.retrieve_evidence(state)
             self.apply_existing_work_order_checks(state)
             self.assess_rework_risk(state)
+            self._mark_workflow_phase(state, DiagnosticWorkflowPhase.PLANNING)
             self.plan(state)
             self.plan_case_only_exploration(state)
             self.propose_dynamic_tree_request(state)
+            self.propose_tree_change_candidate(state)
         self.evaluate_gate(state)
+        self.annotate_after_gate(state)
         self.generate_report(state)
         self._record_replay(before, state)
         state.touch()
@@ -196,10 +209,12 @@ class DiagnosticEngine:
         if classification.coverage_status == CoverageStatus.COVERED and classification.tree_id:
             state.active_tree_id = classification.tree_id
             state.active_node_id = self.repository.start_node_id(classification.tree_id)
+        self._mark_workflow_phase(state, DiagnosticWorkflowPhase.CLASSIFIED)
 
     def retrieve_evidence(self, state: DiagnosticState) -> None:
         if not state.intake:
             return
+        self._mark_workflow_phase(state, DiagnosticWorkflowPhase.RETRIEVING_CONTEXT)
         if any(e.source_type == "RAG" for e in state.evidence_chain):
             return
         if state.diagnosis_mode == DiagnosisMode.CASE_ONLY_EXPLORATORY and state.work_order:
@@ -230,6 +245,7 @@ class DiagnosticEngine:
         return deduped
 
     def plan(self, state: DiagnosticState) -> None:
+        self._mark_workflow_phase(state, DiagnosticWorkflowPhase.PLANNING)
         actions = self.planner.plan(state)
         counter_actions = self._rework_counter_actions(state)
         state.planned_actions = _dedupe_actions([*counter_actions, *actions])
@@ -292,8 +308,6 @@ class DiagnosticEngine:
     def plan_case_only_exploration(self, state: DiagnosticState) -> None:
         if state.diagnosis_mode != DiagnosisMode.CASE_ONLY_EXPLORATORY:
             return
-        if state.case_only_plan and state.case_only_hypotheses:
-            return
         result = self.case_only_planner.plan(state)
         state.case_only_hypotheses = result.hypotheses
         state.case_only_plan = result.plan
@@ -303,6 +317,68 @@ class DiagnosticEngine:
         request = self.dynamic_tree_builder.build(state)
         state.fault_tree_generation_request = request
         state.fault_tree_request_cluster = self.dynamic_tree_builder.build_cluster(state, request)
+
+    def propose_tree_change_candidate(self, state: DiagnosticState) -> None:
+        if not _eligible_for_tree_change(state):
+            state.tree_change_proposal = None
+            return
+        change_types = _tree_change_types(state)
+        candidate_tests = _tree_change_candidate_tests(state)
+        root_families = _tree_change_root_families(state)
+        source_case_ids = list(
+            dict.fromkeys(
+                [
+                    state.case_id,
+                    state.work_order.order_id if state.work_order else None,
+                ]
+            )
+        )
+        source_case_ids = [item for item in source_case_ids if item]
+        proposal_id = _tree_change_proposal_id(state.active_tree_id or "UNKNOWN_TREE", source_case_ids, change_types)
+        start_name = _tree_start_name(self.repository, state.active_tree_id) or (
+            state.work_order.failure_phenomenon if state.work_order else state.case_id
+        )
+        drift_signals = _tree_change_drift_signals(state)
+        state.tree_change_proposal = TreeProposal(
+            proposal_id=proposal_id,
+            proposal_kind=TreeProposalKind.TREE_CHANGE,
+            status=TreeProposalStatus.DRAFT_TREE,
+            source_type="COVERED_TREE_DRIFT",
+            target_tree_id=state.active_tree_id,
+            target_tree_version=_tree_version(self.repository, state.active_tree_id),
+            change_types=change_types,
+            change_summary="；".join(drift_signals[:5]) or "covered case 出现已有树变更候选信号。",
+            change_patch={
+                "mode": "review_patch_only",
+                "target_tree_id": state.active_tree_id,
+                "active_node_id": state.active_node_id,
+                "candidate_tests": candidate_tests,
+                "root_cause_families": root_families,
+                "drift_signals": drift_signals,
+            },
+            drift_signals=drift_signals,
+            phenomenon_bucket=_normalize_tree_change_bucket(start_name),
+            candidate_start_symptom=start_name,
+            candidate_failure_domain=state.classification.matched_phenomenon if state.classification else None,
+            root_cause_families=root_families,
+            candidate_tests=candidate_tests,
+            candidate_transitions=[
+                f"PATCH {state.active_tree_id or 'UNKNOWN_TREE'} / {item.value}"
+                for item in change_types
+            ],
+            source_case_ids=source_case_ids,
+            evidence_ids=[item.evidence_id for item in state.evidence_chain],
+            source_refs=_tree_change_source_refs(state),
+            confidence_summary=(
+                "由已覆盖诊断中的反证、返修/误判或工艺漂移信号生成的 TREE_CHANGE proposal；"
+                "仅作为版本化 patch 审核输入，不会直接修改生产 TTL。"
+            ),
+            risk_notes=[
+                "TREE_CHANGE proposal 不能让 Gate PASS，也不能直接改写 Released Tree。",
+                "必须经过 change eval、专家审核、shadow/release 材料和 TTL 审计后才能发布。",
+            ],
+            allowed_next_statuses=[TreeProposalStatus.CANDIDATE_TREE, TreeProposalStatus.REJECTED],
+        )
 
     def apply_existing_work_order_checks(self, state: DiagnosticState) -> None:
         if not state.work_order or not state.active_tree_id:
@@ -372,6 +448,26 @@ class DiagnosticEngine:
     def evaluate_gate(self, state: DiagnosticState) -> None:
         state.gate_result = self.gate.evaluate(state)
 
+    def annotate_after_gate(self, state: DiagnosticState) -> None:
+        if not state.gate_result:
+            return
+        pending = _pending_human_actions(state)
+        state.waiting_action_ids = [action.action_id for action in pending]
+        state.waiting_for_human = bool(pending)
+        if pending:
+            self._mark_workflow_phase(
+                state,
+                DiagnosticWorkflowPhase.WAITING_HITL,
+                f"等待 {len(pending)} 个 HITL 人工检查结果。",
+            )
+            return
+        phase = {
+            "PASS": DiagnosticWorkflowPhase.GATE_PASS,
+            "GRAY": DiagnosticWorkflowPhase.GATE_GRAY,
+            "FAIL": DiagnosticWorkflowPhase.GATE_FAIL,
+        }.get(str(state.gate_result.status), DiagnosticWorkflowPhase.GATE_GRAY)
+        self._mark_workflow_phase(state, phase)
+
     def generate_report(self, state: DiagnosticState) -> None:
         state.final_report = self.reporter.generate(state)
 
@@ -423,6 +519,7 @@ class DiagnosticEngine:
         self.plan_case_only_exploration(state)
         self.propose_dynamic_tree_request(state)
         self.evaluate_gate(state)
+        self.annotate_after_gate(state)
         self.generate_report(state)
         self._record_replay(before, state, accepted=accepted, human_decision=test_payload)
         state.touch()
@@ -432,6 +529,16 @@ class DiagnosticEngine:
         # Reserved for future model/tool executed tests. Current product policy treats every
         # fault-tree test as HITL until the upstream fault-tree generator annotates executor type.
         return None
+
+    def _mark_workflow_phase(
+        self,
+        state: DiagnosticState,
+        phase: DiagnosticWorkflowPhase,
+        note: str | None = None,
+    ) -> None:
+        state.workflow_phase = phase
+        if note:
+            state.workflow_notes = list(dict.fromkeys([*state.workflow_notes, note]))
 
     def _record_replay(
         self,
@@ -492,12 +599,38 @@ def build_langgraph_app(engine: DiagnosticEngine):
         engine.propose_dynamic_tree_request(state)
         return state
 
+    def propose_tree_change_candidate(state: DiagnosticState) -> DiagnosticState:
+        engine.propose_tree_change_candidate(state)
+        return state
+
     def assess_rework_risk(state: DiagnosticState) -> DiagnosticState:
         engine.assess_rework_risk(state)
         return state
 
     def gate(state: DiagnosticState) -> DiagnosticState:
         engine.evaluate_gate(state)
+        return state
+
+    def wait_hitl(state: DiagnosticState) -> DiagnosticState:
+        engine.annotate_after_gate(state)
+        return state
+
+    def gate_pass(state: DiagnosticState) -> DiagnosticState:
+        engine._mark_workflow_phase(state, DiagnosticWorkflowPhase.GATE_PASS)
+        state.waiting_for_human = False
+        state.waiting_action_ids = []
+        return state
+
+    def gate_gray(state: DiagnosticState) -> DiagnosticState:
+        engine._mark_workflow_phase(state, DiagnosticWorkflowPhase.GATE_GRAY)
+        state.waiting_for_human = False
+        state.waiting_action_ids = []
+        return state
+
+    def gate_fail(state: DiagnosticState) -> DiagnosticState:
+        engine._mark_workflow_phase(state, DiagnosticWorkflowPhase.GATE_FAIL)
+        state.waiting_for_human = False
+        state.waiting_action_ids = []
         return state
 
     def report(state: DiagnosticState) -> DiagnosticState:
@@ -531,6 +664,17 @@ def build_langgraph_app(engine: DiagnosticEngine):
             return "auto_tools"
         return "gate"
 
+    def route_after_gate(state: DiagnosticState) -> str:
+        if _pending_human_actions(state):
+            return "wait_hitl"
+        if not state.gate_result:
+            return "gray"
+        if state.gate_result.status == "PASS":
+            return "pass"
+        if state.gate_result.status == "FAIL":
+            return "fail"
+        return "gray"
+
     graph = StateGraph(DiagnosticState)
     graph.add_node("work_order_intake", work_order_intake)
     graph.add_node("normalize_intake", normalize_intake_node)
@@ -542,9 +686,14 @@ def build_langgraph_app(engine: DiagnosticEngine):
     graph.add_node("plan", plan)
     graph.add_node("plan_case_only", plan_case_only)
     graph.add_node("propose_dynamic_tree_request", propose_dynamic_tree_request)
+    graph.add_node("propose_tree_change_candidate", propose_tree_change_candidate)
     graph.add_node("assess_rework_risk", assess_rework_risk)
     graph.add_node("execute_auto_actions", execute_auto_actions)
     graph.add_node("gate", gate)
+    graph.add_node("wait_hitl", wait_hitl)
+    graph.add_node("gate_pass", gate_pass)
+    graph.add_node("gate_gray", gate_gray)
+    graph.add_node("gate_fail", gate_fail)
     graph.add_node("report", report)
     graph.add_node("replay", replay)
     graph.set_entry_point("work_order_intake")
@@ -573,8 +722,9 @@ def build_langgraph_app(engine: DiagnosticEngine):
     graph.add_edge("assess_rework_risk", "plan")
     graph.add_edge("plan", "plan_case_only")
     graph.add_edge("plan_case_only", "propose_dynamic_tree_request")
+    graph.add_edge("propose_dynamic_tree_request", "propose_tree_change_candidate")
     graph.add_conditional_edges(
-        "propose_dynamic_tree_request",
+        "propose_tree_change_candidate",
         route_after_planning,
         {
             "auto_tools": "execute_auto_actions",
@@ -582,7 +732,20 @@ def build_langgraph_app(engine: DiagnosticEngine):
         },
     )
     graph.add_edge("execute_auto_actions", "gate")
-    graph.add_edge("gate", "report")
+    graph.add_conditional_edges(
+        "gate",
+        route_after_gate,
+        {
+            "wait_hitl": "wait_hitl",
+            "pass": "gate_pass",
+            "gray": "gate_gray",
+            "fail": "gate_fail",
+        },
+    )
+    graph.add_edge("wait_hitl", "report")
+    graph.add_edge("gate_pass", "report")
+    graph.add_edge("gate_gray", "report")
+    graph.add_edge("gate_fail", "report")
     graph.add_edge("report", "replay")
     graph.add_edge("replay", END)
     return graph.compile()
@@ -605,6 +768,18 @@ def _dedupe_actions(actions: list[DiagnosticAction]) -> list[DiagnosticAction]:
         seen.add(key)
         deduped.append(action)
     return deduped
+
+
+def _pending_human_actions(state: DiagnosticState) -> list[DiagnosticAction]:
+    executed_test_ids = {item.test_id for item in state.executed_tests}
+    pending: list[DiagnosticAction] = []
+    for action in state.planned_actions:
+        if action.tool_name != "human_input" or not action.blocking:
+            continue
+        if action.test_id and action.test_id in executed_test_ids:
+            continue
+        pending.append(action)
+    return pending
 
 
 def _check_supports_branch(text: str) -> bool:
@@ -711,3 +886,154 @@ def _diagnosis_mode(value: str) -> DiagnosisMode:
         return DiagnosisMode(value.upper())
     except ValueError:
         return DiagnosisMode.PRODUCTION
+
+
+def _eligible_for_tree_change(state: DiagnosticState) -> bool:
+    if state.diagnosis_mode == DiagnosisMode.CASE_ONLY_EXPLORATORY:
+        return False
+    if not state.active_tree_id or not state.work_order:
+        return False
+    return bool(_tree_change_drift_signals(state))
+
+
+def _tree_change_types(state: DiagnosticState) -> list[TreeChangeType]:
+    text = _tree_change_text(state)
+    types: list[TreeChangeType] = []
+    if any(marker in text for marker in ["工艺变更", "工艺调整", "标准更新", "适用范围", "车型切换"]):
+        types.append(TreeChangeType.UPDATE_SCOPE)
+    if any(marker in text for marker in ["阈值", "限值", "标准值", "超差标准"]):
+        types.append(TreeChangeType.UPDATE_THRESHOLD)
+    if any(marker in text for marker in ["检测项", "检查项", "无法执行", "不适用", "替代检测"]):
+        types.append(TreeChangeType.UPDATE_TEST)
+    if any(marker in text for marker in ["条件", "判定", "误判", "不支持", "排除"]):
+        types.append(TreeChangeType.UPDATE_TRANSITION_CONDITION)
+    if any(marker in text for marker in ["废弃", "取消", "禁用"]):
+        types.append(TreeChangeType.DEPRECATE_TEST)
+    if any(marker in text for marker in ["新增分支", "新增根因", "新根因"]):
+        types.append(TreeChangeType.ADD_BRANCH)
+    if not types and state.rework_risk:
+        types.append(TreeChangeType.UPDATE_TRANSITION_CONDITION)
+        if state.rework_risk.recommended_checks:
+            types.append(TreeChangeType.UPDATE_TEST)
+    return list(dict.fromkeys(types or [TreeChangeType.UPDATE_TEST]))
+
+
+def _tree_change_drift_signals(state: DiagnosticState) -> list[str]:
+    text = _tree_change_text(state)
+    signals: list[str] = []
+    marker_groups = {
+        "工艺/适用范围变化": ["工艺变更", "工艺调整", "标准更新", "适用范围", "车型切换"],
+        "检测项变化或不可执行": ["检测项", "检查项", "无法执行", "不适用", "替代检测"],
+        "阈值/判定标准变化": ["阈值", "限值", "标准值", "超差标准"],
+        "分支反证或误判": ["误判", "不支持", "排除", "无效", "仍复现", "无改善"],
+        "新分支或新根因": ["新增分支", "新增根因", "新根因"],
+    }
+    for label, markers in marker_groups.items():
+        if any(marker in text for marker in markers):
+            signals.append(label)
+    if state.rework_risk:
+        if state.rework_risk.is_rework_suspected:
+            signals.append("返修/复现风险")
+        if state.rework_risk.is_prior_misdiagnosis_suspected:
+            signals.append("前次误判或处置无效")
+        signals.extend(state.rework_risk.risk_notes)
+    return list(dict.fromkeys(signals))
+
+
+def _tree_change_candidate_tests(state: DiagnosticState) -> list[str]:
+    tests = [
+        *(state.rework_risk.recommended_checks if state.rework_risk else []),
+        *(
+            action.reason
+            for action in state.planned_actions
+            if action.action_type in {"REWORK_COUNTER_CHECK", "CONFIRMATION_CHECK"}
+        ),
+        *(test.result for test in state.executed_tests if _looks_like_tree_change_signal(test.result)),
+    ]
+    return [item[:160] for item in list(dict.fromkeys(item for item in tests if item))][:12]
+
+
+def _tree_change_root_families(state: DiagnosticState) -> list[str]:
+    roots = [
+        cause.name
+        for cause in state.candidate_causes
+        if cause.name and (cause.cause_id == state.active_node_id or cause.score >= 0.5)
+    ]
+    if state.active_node_id:
+        roots.append(state.active_node_id)
+    return list(dict.fromkeys(roots))[:12]
+
+
+def _tree_change_text(state: DiagnosticState) -> str:
+    parts = []
+    if state.work_order:
+        parts.extend(
+            [
+                state.work_order.title or "",
+                state.work_order.failure_phenomenon,
+                state.work_order.description or "",
+                " ".join(state.work_order.executed_checks),
+                state.work_order.repair_action or "",
+            ]
+        )
+    parts.extend(test.result + " " + (test.notes or "") for test in state.executed_tests)
+    if state.rework_risk:
+        parts.extend(
+            [
+                *state.rework_risk.prior_actions,
+                *state.rework_risk.ineffective_actions,
+                *state.rework_risk.avoided_repeat_actions,
+                *state.rework_risk.recommended_checks,
+                *state.rework_risk.risk_notes,
+            ]
+        )
+    return "\n".join(parts)
+
+
+def _looks_like_tree_change_signal(text: str) -> bool:
+    return any(
+        marker in text
+        for marker in ["工艺变更", "阈值", "误判", "不支持", "排除", "无效", "仍复现", "无法执行", "不适用"]
+    )
+
+
+def _tree_change_source_refs(state: DiagnosticState) -> list[str]:
+    refs: list[str] = []
+    refs.extend(ref for item in state.evidence_chain for ref in item.source_refs)
+    if state.work_order and state.work_order.source_path:
+        refs.append(state.work_order.source_path)
+    return list(dict.fromkeys(refs))
+
+
+def _tree_start_name(repository: RdfFaultTreeRepository, tree_id: str | None) -> str | None:
+    if not tree_id:
+        return None
+    start_id = repository.start_node_id(tree_id)
+    symptom = repository.get_symptom(start_id) if start_id else None
+    return symptom.name if symptom else None
+
+
+def _tree_version(repository: RdfFaultTreeRepository, tree_id: str | None) -> str | None:
+    if not tree_id:
+        return None
+    tree = repository.trees.get(tree_id)
+    return tree.version if tree else None
+
+
+def _tree_change_proposal_id(
+    target_tree_id: str,
+    source_case_ids: list[str],
+    change_types: list[TreeChangeType],
+) -> str:
+    basis = "|".join(
+        [
+            target_tree_id,
+            ",".join(sorted(source_case_ids)),
+            ",".join(sorted(item.value for item in change_types)),
+        ]
+    )
+    return f"TP-CHG-{sha1(basis.encode()).hexdigest()[:10]}"
+
+
+def _normalize_tree_change_bucket(value: str) -> str:
+    return "".join(value.lower().split())[:48] or "unknown"

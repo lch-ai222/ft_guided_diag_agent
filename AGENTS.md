@@ -48,8 +48,17 @@
 
 - 生产态诊断必须走人工审核发布的 `Released Tree`。
 - 无故障树覆盖时，生产态不能 PASS，应给出不支持或风险阻断。
+- LangGraph 是诊断主状态机：覆盖路由、case-only 路由、Gate 后 `WAITING_HITL / GATE_PASS / GATE_GRAY / GATE_FAIL` 状态标记、Report 和 Replay 都在同一 `DiagnosticState` 上运行；自动工具节点仍只预留，不执行真实自动工具。
 - 开发态允许进入 `CASE_ONLY_EXPLORATORY`，基于历史工单/RAG/LLM 自主探索，同时生成或更新 `TreeProposal`；报告必须显式标注不可生产放行。
+- case-only 不基于未审核新树进行诊断；它先执行“假设 -> HITL 检查 -> 更新假设状态 -> 再规划”的探索循环，再把全程证据沉淀为 `FaultTreeGenerationRequest` / `TreeProposal` 输入。
+- case-only 人工检查结果只能更新 `ExploratoryFinding`、hypothesis 状态、证据链和后续动作；不能直接修改生产 TTL，也不能直接把 `REFUTED` 假设固化为候选 root cause family。
+- `TreeProposal` 第二入口已支持从开发态 `FaultTreeGenerationRequest` 和跨 runs `FaultTreeRequestCluster` 写入/更新 `DRAFT_TREE`，只作为审核与评测输入。
+- TreeProposal 晋升预审只输出 `READY_FOR_REVIEW / NEEDS_MORE_EVIDENCE / BLOCKED / NOT_APPLICABLE` 和审核材料，不自动变更状态；最终晋升必须由人工审核决定。
+- TreeProposal 跨 proposal 聚合只能作为预审和专家审核证据；即使同类 bucket/root/test 统计良好，也不能绕过人工审核、准入材料、shadow eval、release manifest 和 registry/TTL 审计。
+- TreeProposal 审核页必须优先服务专家阅读：展示 proposed tree 的 L1/L2/L3 结构、字段状态、transition/test 和从来源到生产 TTL 的流程状态；JSON 只能作为折叠调试/审计信息。
+- Streamlit 左侧 sidebar 分为 `诊断工作台` 和 `树生成工作台`：批量文档生成、树生成 HITL 和 TreeProposal 审核属于树生成工作台；诊断中发现无树覆盖的第二入口保留在诊断工作台。
 - `TreeProposal`、`DRAFT_TREE`、`CANDIDATE_TREE`、`GRAY_TREE` 都不能自动生产 PASS；只有 `RELEASED_TREE` 可以成为生产主链路。
+- Released Tree registry 当前支持 `READY_FOR_TTL_WRITE` 审计队列、受控生产 TTL 写入和 rollback 演练：写入必须消费 READY 记录、复核 release artifact / TTL hash / production TTL parse / tree_id 去重、写入前生成备份，成功后标记 `REGISTERED`；rollback 可 dry-run 或恢复备份并标记 `ROLLED_BACK`。这些动作不自动改变 Gate 或分类器运行时缓存。
 - 动态树生成必须遵守 `docs/tree_gen_agent.md`：LLM/Agent 只维护 `FailureSymptom`、`OntologyTest`、`OntologyMeasure`、`SymptomTransition` 等本体实体和关系，最终 `FaultTree` 由确定性 BFS 重建，不能让 LLM 直接输出最终 `FaultTree.symptom_ids`。
 - 本体抽取字段、FieldStatus、关系和校验要求以 `docs/tree_ontology_schema.md` 为准。
 - 树生成主路径必须 LLM-first；规则抽取只能作为 `LOW_CONF_DEBUG_DRAFT` 调试兜底，不能当作高质量候选树。
@@ -74,9 +83,17 @@
 - `case_only_planner.py`：无故障树覆盖时生成探索假设、探索计划和 HITL 动作。
 - `dynamic_tree.py`：unsupported development 工单的动态故障树候选请求和跨 runs 聚类。
 - `tree_generation.py`：批量质量报告/8D/SOP/FMEA/维修资料生成 DRAFT_TREE、TreeGenerationJob 和 TreeProposal 的第一入口。
+- `tree_proposals.py`：本地 TreeProposal Store、case link / eval / review log / artifact snapshot，以及从 case-only request 或 dynamic cluster 生成/更新 DRAFT_TREE 的第二入口。
+- `tree_proposal_precheck.py`：TreeProposal 晋升预审，生成阻塞项、警告项、满足项和建议动作，并随人工审核日志持久化。
+- `tree_proposal_analytics.py`：跨 proposal 聚合分析，按 phenomenon bucket、root cause family、repeated test、人工确认率和高风险反证辅助预审；不自动晋升、不写生产 TTL。
+- `tree_proposal_view.py`：TreeProposal 审核视图辅助，生成生命周期状态、artifact 树表格和无 artifact 的 proposal skeleton。
+- `tree_admission.py`：GRAY / RELEASED 准入材料包，供审核 UI 和晋升预审共用。
+- `tree_release.py`：release manifest、rollback metadata、TTL diff 和 runtime-compatible TTL preview 发布前材料。
+- `released_tree_registry.py`：Released Tree registry、生产 TTL 写入审计、受控写入执行和 rollback 演练。
 - `rework_guard.py`：识别返修、前次误判、无效处置、相似返修案例，并生成反证检查建议。
 - `tools.py`：统一 Tool Registry、Pydantic schema、工具调用记录与 evidence 映射。
 - `gate.py`：确定性风险门禁，输出 `PASS / GRAY / FAIL`。
+- `diagnostic_explain.py`：只读 `DiagnosticState`，生成诊断时间线、Planner/Evidence/Gate 因果解释和证据摘要；不改变 Gate、Planner 或 Replay。
 - `report.py`：Markdown + JSON 报告生成。
 - `workflow.py`：核心诊断引擎与 LangGraph 编排。
 - `eval.py`：离线评测、指标计算、labeled v1 数据集读取。
@@ -87,6 +104,7 @@ UI 位于 `app/streamlit_app.py`：
 - 工单选择/粘贴。
 - 诊断启动。
 - 当前节点与 HITL 检测录入。
+- 诊断时间线、Planner/Evidence/Gate 因果解释和证据摘要。
 - case-only 探索展示。
 - 批量文档预生成候选树入口。
 - 返修/误判风险展示。
@@ -171,7 +189,7 @@ STREAMLIT_BROWSER_GATHER_USAGE_STATS=false .venv/bin/streamlit run app/streamlit
 labeled v1 诊断评测：
 
 ```bash
-.venv/bin/python -m ft_diag_agent.eval --diagnostic-eval --eval-suite labeled_v1 --eval-output-dir datasets/eval_results_labeled_v1
+.venv/bin/python -m ft_diag_agent.eval --diagnostic-eval --eval-suite labeled_v1 --eval-output-dir datasets/eval_results_labeled_v1 --eval-runs-dir datasets/eval_runs
 ```
 
 推荐完整验证顺序：
@@ -180,7 +198,7 @@ labeled v1 诊断评测：
 .venv/bin/ruff check .
 .venv/bin/python -m pytest
 .venv/bin/python -m compileall src app tests
-.venv/bin/python -m ft_diag_agent.eval --diagnostic-eval --eval-suite labeled_v1 --eval-output-dir datasets/eval_results_labeled_v1
+.venv/bin/python -m ft_diag_agent.eval --diagnostic-eval --eval-suite labeled_v1 --eval-output-dir datasets/eval_results_labeled_v1 --eval-runs-dir datasets/eval_runs
 ```
 
 ## 8. 数据目录
@@ -188,8 +206,11 @@ labeled v1 诊断评测：
 - `corrected_fault_tree_instances.ttl`：当前故障树 TTL 样例，包含 FT_001 车机黑屏、FT_002 车门无法关闭。
 - `data/raw_docs/`：SOP、FMEA、维修手册、mock 工单、labeled eval 数据。
 - `data/chroma/`：Chroma 向量库持久化目录，可重建。
+- `data/tree_generation/`：批量文档树生成 job/artifact 输出目录，可清理后重新生成。
+- `data/tree_proposals/`：TreeProposal、case link、eval、review log、artifact/release 材料目录，可按审核需要清理。
+- `data/released_trees/`：Released Tree registry、生产 TTL 写入/回滚审计和写入前备份目录，可在确认不需要发布追溯或回滚后清理。
 - `runs/`：replay trace 输出目录，可按需要清理。
-- `datasets/`：导出的 SFT/preference/eval 数据和评测结果。
+- `datasets/`：导出的 SFT/preference/eval 数据、版本化 eval runs 和评测结果。
 
 不要把 `.env`、大型缓存、向量库、运行输出误写入代码逻辑。
 

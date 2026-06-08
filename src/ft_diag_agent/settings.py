@@ -21,6 +21,7 @@ class Settings:
     datasets_dir: Path = Path(os.getenv("DATASETS_DIR", "datasets"))
     tree_generation_dir: Path = Path(os.getenv("TREE_GENERATION_DIR", "data/tree_generation"))
     tree_proposals_dir: Path = Path(os.getenv("TREE_PROPOSALS_DIR", "data/tree_proposals"))
+    released_tree_registry_dir: Path = Path(os.getenv("RELEASED_TREE_REGISTRY_DIR", "data/released_trees"))
     rag_collection_name: str = os.getenv("RAG_COLLECTION_NAME", "ft_diag_docs")
     rag_chunk_size: int = int(os.getenv("RAG_CHUNK_SIZE", "900"))
     rag_chunk_overlap: int = int(os.getenv("RAG_CHUNK_OVERLAP", "120"))

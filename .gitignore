@@ -16,6 +16,8 @@ data/tree_generation/*
 !data/tree_generation/.gitkeep
 data/tree_proposals/*
 !data/tree_proposals/.gitkeep
+data/released_trees/*
+!data/released_trees/.gitkeep
 runs/*
 !runs/.gitkeep
 datasets/*.jsonl
@@ -23,6 +25,7 @@ datasets/*.csv
 datasets/*.json
 datasets/eval_results/*
 datasets/eval_results_*/
+datasets/eval_runs/*
 !datasets/.gitkeep
 
 # Local secrets

@@ -87,6 +87,15 @@ class ReportGenerator:
                 lines.append(f"- 聚类ID：{cluster.cluster_id}")
                 lines.append(f"- 聚类支持案例数：{cluster.support_count}/{cluster.min_support_for_review}")
                 lines.append(f"- 推荐下一步：{cluster.recommended_next_step}")
+        if state.tree_change_proposal:
+            proposal = state.tree_change_proposal
+            lines.extend(["", "## 已有树变更候选"])
+            lines.append(f"- Proposal：{proposal.proposal_id}")
+            lines.append(f"- 目标树：{proposal.target_tree_id or 'UNKNOWN'}")
+            lines.append(f"- 变更类型：{', '.join(item.value for item in proposal.change_types) or '待确认'}")
+            if proposal.change_summary:
+                lines.append(f"- 变更摘要：{proposal.change_summary}")
+            lines.append("- 约束：TREE_CHANGE 只作为版本化 patch 审核输入，不直接修改生产 TTL，不影响 Gate。")
         lines.extend(["", "## 风险与阻塞"])
         if state.gate_result:
             lines.extend([f"- 阻塞：{item}" for item in state.gate_result.blocking_reasons] or ["- 无"])

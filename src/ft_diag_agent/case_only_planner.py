@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from ft_diag_agent.llm import LlmProvider
 from ft_diag_agent.models import (
     CaseOnlyHypothesis,
+    CaseOnlyHypothesisStatus,
     DiagnosticAction,
     DiagnosticState,
     ExploratoryDiagnosticPlan,
@@ -51,6 +52,35 @@ class CaseOnlyPlanner:
 
     def plan(self, state: DiagnosticState, limit: int = 5) -> CaseOnlyPlannerResult:
         evidence_ids = [e.evidence_id for e in state.evidence_chain[:8]]
+        if state.case_only_hypotheses:
+            hypotheses = _update_hypotheses_from_findings(state.case_only_hypotheses, state)
+            active_hypotheses = [
+                hypothesis
+                for hypothesis in hypotheses
+                if hypothesis.status in {CaseOnlyHypothesisStatus.OPEN, CaseOnlyHypothesisStatus.NEEDS_EVIDENCE}
+            ]
+            actions = self._rule_actions(state, active_hypotheses, evidence_ids) if active_hypotheses else []
+            iteration = (state.case_only_plan.iteration + 1) if state.case_only_plan else 2
+            completed_action_ids = _completed_case_only_action_ids(state)
+            stopped_reason = None if actions else _case_only_stopped_reason(hypotheses)
+            return CaseOnlyPlannerResult(
+                hypotheses=hypotheses,
+                plan=ExploratoryDiagnosticPlan(
+                    objective=state.case_only_plan.objective
+                    if state.case_only_plan
+                    else "在无故障树覆盖条件下持续收敛探索假设。",
+                    summary=_loop_summary(state, hypotheses, actions),
+                    planner_source="RULE_LOOP",
+                    hypothesis_ids=[h.hypothesis_id for h in hypotheses],
+                    next_action_ids=[a.action_id for a in actions[:limit]],
+                    evidence_ids=evidence_ids,
+                    risk_notes=["非故障树覆盖探索循环，不可生产放行"],
+                    iteration=iteration,
+                    completed_action_ids=completed_action_ids,
+                    stopped_reason=stopped_reason,
+                ),
+                actions=actions[:limit],
+            )
         llm_output = self._llm_plan(state)
         if llm_output and llm_output.hypotheses and llm_output.actions:
             hypotheses = _normalize_hypotheses(llm_output.hypotheses, evidence_ids)
@@ -68,6 +98,7 @@ class CaseOnlyPlanner:
                         "非故障树覆盖探索计划，不可生产放行",
                         *llm_output.risk_notes,
                     ],
+                    iteration=1,
                 ),
                 actions=actions[:limit],
             )
@@ -84,6 +115,7 @@ class CaseOnlyPlanner:
                 next_action_ids=[a.action_id for a in actions[:limit]],
                 evidence_ids=evidence_ids,
                 risk_notes=["非故障树覆盖探索计划，不可生产放行"],
+                iteration=1,
             ),
             actions=actions[:limit],
         )
@@ -404,6 +436,94 @@ def _normalize_hypotheses(hypotheses: list[CaseOnlyHypothesis], evidence_ids: li
             )
         )
     return normalized
+
+
+def _update_hypotheses_from_findings(
+    hypotheses: list[CaseOnlyHypothesis],
+    state: DiagnosticState,
+) -> list[CaseOnlyHypothesis]:
+    updated: list[CaseOnlyHypothesis] = []
+    has_findings = bool(state.case_only_findings)
+    for hypothesis in hypotheses:
+        supporting = list(hypothesis.supporting_evidence_ids)
+        contradicting = list(hypothesis.contradicting_evidence_ids)
+        support_count = 0
+        refute_count = 0
+        for finding in state.case_only_findings:
+            if hypothesis.hypothesis_id in finding.supports_hypothesis_ids:
+                support_count += 1
+                if finding.evidence_id:
+                    supporting.append(finding.evidence_id)
+            if hypothesis.hypothesis_id in finding.refutes_hypothesis_ids:
+                refute_count += 1
+                if finding.evidence_id:
+                    contradicting.append(finding.evidence_id)
+        status = hypothesis.status
+        confidence = hypothesis.confidence
+        if refute_count > support_count:
+            status = CaseOnlyHypothesisStatus.REFUTED
+            confidence = max(0.05, confidence - 0.25)
+        elif support_count > refute_count:
+            status = CaseOnlyHypothesisStatus.SUPPORTED
+            confidence = min(0.95, confidence + 0.2)
+        elif has_findings and status == CaseOnlyHypothesisStatus.OPEN:
+            status = CaseOnlyHypothesisStatus.NEEDS_EVIDENCE
+            confidence = max(0.1, confidence - 0.05)
+        updated.append(
+            hypothesis.model_copy(
+                update={
+                    "status": status,
+                    "confidence": confidence,
+                    "supporting_evidence_ids": _unique_texts(supporting),
+                    "contradicting_evidence_ids": _unique_texts(contradicting),
+                }
+            )
+        )
+    return updated
+
+
+def _completed_case_only_action_ids(state: DiagnosticState) -> list[str]:
+    return _unique_texts(
+        [
+            finding.action_id
+            for finding in state.case_only_findings
+            if finding.action_id
+        ]
+    )
+
+
+def _case_only_stopped_reason(hypotheses: list[CaseOnlyHypothesis]) -> str:
+    if not hypotheses:
+        return "NO_HYPOTHESES"
+    if all(hypothesis.status == CaseOnlyHypothesisStatus.REFUTED for hypothesis in hypotheses):
+        return "ALL_HYPOTHESES_REFUTED"
+    if all(
+        hypothesis.status in {CaseOnlyHypothesisStatus.SUPPORTED, CaseOnlyHypothesisStatus.REFUTED}
+        for hypothesis in hypotheses
+    ):
+        return "ALL_HYPOTHESES_RESOLVED"
+    return "NO_REMAINING_CHECKS"
+
+
+def _loop_summary(
+    state: DiagnosticState,
+    hypotheses: list[CaseOnlyHypothesis],
+    actions: list[DiagnosticAction],
+) -> str:
+    counts = {status.value: 0 for status in CaseOnlyHypothesisStatus}
+    for hypothesis in hypotheses:
+        counts[str(hypothesis.status)] = counts.get(str(hypothesis.status), 0) + 1
+    next_text = f"下一轮规划 {len(actions)} 个检查动作" if actions else "暂无可继续规划的检查动作"
+    return (
+        f"已记录 {len(state.case_only_findings)} 条探索发现；"
+        f"假设状态：OPEN={counts.get('OPEN', 0)}，SUPPORTED={counts.get('SUPPORTED', 0)}，"
+        f"REFUTED={counts.get('REFUTED', 0)}，NEEDS_EVIDENCE={counts.get('NEEDS_EVIDENCE', 0)}；"
+        f"{next_text}。"
+    )
+
+
+def _unique_texts(values: list[str | None]) -> list[str]:
+    return list(dict.fromkeys(str(value) for value in values if value))
 
 
 def _state_text(state: DiagnosticState) -> str:

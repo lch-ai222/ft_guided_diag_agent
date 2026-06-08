@@ -33,6 +33,7 @@ from ft_diag_agent.tree_generation import (
     render_tree_generation_mermaid,
     validate_tree_generation_artifact,
 )
+from ft_diag_agent.tree_generation_eval import TREE_GENERATION_EXTRACTION_EVAL_SUITE
 
 
 def test_tree_generation_validation_reports_actionable_graph_issues() -> None:
@@ -121,6 +122,8 @@ def test_batch_tree_generation_creates_draft_tree_proposal(tmp_path: Path) -> No
     assert (tmp_path / "tree_generation" / "jobs" / f"{job.job_id}.json").exists()
     assert (tmp_path / "tree_generation" / "artifacts" / job.job_id / "artifact.json").exists()
     assert (tmp_path / "tree_proposals" / "proposals.jsonl").exists()
+    eval_results = (tmp_path / "tree_proposals" / "eval_results.jsonl").read_text(encoding="utf-8")
+    assert TREE_GENERATION_EXTRACTION_EVAL_SUITE in eval_results
     assert job.artifact.stage_timings
     assert {item["stage_id"] for item in job.artifact.stage_timings} >= {"copy_inputs", "read_chunks", "fallback"}
 
@@ -602,6 +605,7 @@ def test_apply_hitl_decision_confirms_field_and_refreshes_preview(tmp_path: Path
     job = TreeGenerationJob(job_id="TGJ-HITL-APPLY", title="HITL apply", artifact=artifact, proposal=proposal)
     service.save_job(job)
     service.append_proposal(proposal)
+    before_hitl_count = len(generation_hitl_items(artifact))
     decision = TreeGenerationHitlDecision(
         suggestion_id="TGHS-DESC",
         object_type=OntologyEntityType.FAILURE_SYMPTOM.value,
@@ -618,6 +622,8 @@ def test_apply_hitl_decision_confirms_field_and_refreshes_preview(tmp_path: Path
     assert root.description_status == FieldStatus.CONFIRMED
     assert "锁止预紧不足" in (root.description or "")
     assert updated.artifact.hitl_decisions[0].decision_id == decision.decision_id
+    assert all(item.suggestion_id != "TGHS-DESC" for item in updated.artifact.hitl_suggestions)
+    assert len(generation_hitl_items(updated.artifact)) < before_hitl_count
     assert updated.artifact.validation_report
     assert updated.artifact.rebuilt_fault_tree["build_method"] == "deterministic_bfs_preview"
     logs = service.proposal_store.load_review_logs("TP-HITL-APPLY")

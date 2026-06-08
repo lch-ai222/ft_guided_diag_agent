@@ -2,11 +2,17 @@ import json
 from pathlib import Path
 
 from ft_diag_agent.eval import (
+    EvalCaseResult,
+    EvalSuiteSummary,
+    compare_eval_runs,
     default_eval_cases,
     export_datasets,
+    list_eval_runs,
+    load_eval_run,
     load_labeled_eval_cases_v1,
     run_eval_cases,
     write_eval_outputs,
+    write_eval_run,
 )
 from ft_diag_agent.fault_tree import RdfFaultTreeRepository
 from ft_diag_agent.models import (
@@ -151,6 +157,90 @@ def test_diagnostic_eval_runs_default_suite(tmp_path: Path) -> None:
     assert Path(paths["summary"]).exists()
     assert Path(paths["results"]).exists()
     assert Path(paths["details"]).exists()
+
+
+def test_eval_run_writes_versioned_outputs_and_confusion(tmp_path: Path) -> None:
+    summary = EvalSuiteSummary(
+        cases=2,
+        covered_cases=1,
+        unsupported_cases=1,
+        route_accuracy=1.0,
+        tree_selection_accuracy=0.5,
+        next_action_hit_rate=0.5,
+        results=[
+            _eval_result("CASE-1", expected_tree="FT_001", predicted_tree="FT_001", next_action_hit=True),
+            _eval_result("CASE-2", expected_tree="FT_002", predicted_tree="FT_001", next_action_hit=False),
+        ],
+    )
+
+    artifact = write_eval_run(summary, tmp_path / "eval_runs", "unit_suite", run_id="run-a")
+    loaded = load_eval_run(tmp_path / "eval_runs", "run-a")
+    runs = list_eval_runs(tmp_path / "eval_runs")
+
+    assert artifact.metadata.run_id == "run-a"
+    assert loaded.summary.cases == 2
+    assert loaded.summary.results[1].case_id == "CASE-2"
+    assert runs[0].run_id == "run-a"
+    assert any(row.expected == "FT_002" and row.predicted == "FT_001" for row in loaded.confusion.tree)
+    assert (tmp_path / "eval_runs" / "run-a" / "confusion_test.json").exists()
+
+
+def test_eval_run_comparison_flags_regression_and_affected_cases(tmp_path: Path) -> None:
+    baseline = EvalSuiteSummary(
+        cases=1,
+        covered_cases=1,
+        unsupported_cases=0,
+        next_action_hit_rate=1.0,
+        production_gate_safety_rate=1.0,
+        gate_mispass_count=0,
+        results=[_eval_result("CASE-1", next_action_hit=True)],
+    )
+    current = EvalSuiteSummary(
+        cases=1,
+        covered_cases=1,
+        unsupported_cases=0,
+        next_action_hit_rate=0.0,
+        production_gate_safety_rate=1.0,
+        gate_mispass_count=0,
+        results=[_eval_result("CASE-1", next_action_hit=False)],
+    )
+    write_eval_run(baseline, tmp_path / "eval_runs", "unit_suite", run_id="baseline")
+    write_eval_run(current, tmp_path / "eval_runs", "unit_suite", run_id="current")
+
+    comparison = compare_eval_runs(
+        load_eval_run(tmp_path / "eval_runs", "baseline"),
+        load_eval_run(tmp_path / "eval_runs", "current"),
+    )
+    action_delta = next(item for item in comparison.metric_deltas if item.metric == "next_action_hit_rate")
+
+    assert action_delta.status == "REGRESSED"
+    assert action_delta.affected_case_ids == ["CASE-1"]
+    assert comparison.warnings == ["next_action_hit_rate: 1.0 -> 0.0"]
+
+
+def _eval_result(
+    case_id: str,
+    *,
+    expected_tree: str = "FT_001",
+    predicted_tree: str = "FT_001",
+    next_action_hit: bool = True,
+) -> EvalCaseResult:
+    return EvalCaseResult(
+        case_id=case_id,
+        diagnosis_mode=DiagnosisMode.PRODUCTION,
+        expected_tree_id=expected_tree,
+        expected_leaf_symptom_id="S001",
+        expected_next_action_hit_text="T001",
+        expected_action_keywords=["T001"],
+        tree_id=predicted_tree,
+        active_node_id="S001",
+        gate_status=GateStatus.PASS,
+        tree_correct=expected_tree == predicted_tree,
+        next_action_hit=next_action_hit,
+        planned_actions=[{"test_id": "T001" if next_action_hit else "T999", "action_type": "TEST"}],
+        failure_tags=[] if next_action_hit and expected_tree == predicted_tree else ["next_action_miss"],
+        replay_trace=[{"state_after": {"workflow_phase": "GATE_PASS"}, "gate_result": {"status": "PASS"}}],
+    )
 
 
 def test_diagnostic_eval_runs_labeled_v1_without_label_leakage(tmp_path: Path) -> None:

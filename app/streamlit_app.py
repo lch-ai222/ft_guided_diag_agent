@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from html import escape
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,14 +18,25 @@ except Exception:
 
 import streamlit as st
 
+from ft_diag_agent.diagnostic_explain import (
+    build_diagnostic_timeline,
+    build_evidence_summary,
+    build_planner_gate_explanations,
+)
 from ft_diag_agent.dynamic_tree import merge_dynamic_tree_clusters
 from ft_diag_agent.eval import (
     EvalCaseResult,
+    EvalConfusionReport,
+    build_eval_confusion,
+    compare_eval_runs,
     default_eval_cases,
+    list_eval_runs,
+    load_eval_run,
     load_labeled_eval_cases_v1,
     load_replay_records,
     run_eval_cases,
     write_eval_outputs,
+    write_eval_run,
 )
 from ft_diag_agent.fault_tree import RdfFaultTreeRepository
 from ft_diag_agent.models import (
@@ -37,15 +49,40 @@ from ft_diag_agent.models import (
     WorkOrder,
 )
 from ft_diag_agent.rag import DocumentRag
+from ft_diag_agent.released_tree_registry import ReleasedTreeRegistry
 from ft_diag_agent.settings import Settings
+from ft_diag_agent.tree_admission import build_gray_admission_package, build_release_admission_package
 from ft_diag_agent.tree_generation import (
     SUPPORTED_TREE_SOURCE_SUFFIXES,
     BatchTreeGenerationService,
     generation_hitl_items,
     render_tree_generation_mermaid,
 )
-from ft_diag_agent.tree_proposal_eval import run_tree_proposal_eval
+from ft_diag_agent.tree_generation_eval import (
+    TREE_GENERATION_EXTRACTION_EVAL_SUITE,
+    run_tree_generation_extraction_eval,
+)
+from ft_diag_agent.tree_proposal_analytics import (
+    TreeProposalAggregateReport,
+    build_tree_proposal_aggregate_report,
+)
+from ft_diag_agent.tree_proposal_eval import (
+    TREE_PROPOSAL_EVAL_SUITE,
+    TREE_PROPOSAL_REPLAY_SHADOW_EVAL_SUITE,
+    run_tree_proposal_eval,
+    run_tree_proposal_replay_shadow_eval,
+)
+from ft_diag_agent.tree_proposal_precheck import assess_tree_proposal_promotion
+from ft_diag_agent.tree_proposal_view import (
+    artifact_node_rows,
+    artifact_transition_rows,
+    proposal_skeleton_mermaid,
+    proposal_skeleton_node_rows,
+    proposal_skeleton_transition_rows,
+    tree_proposal_lifecycle_steps,
+)
 from ft_diag_agent.tree_proposals import TreeProposalStore
+from ft_diag_agent.tree_release import build_tree_release_artifact
 from ft_diag_agent.work_orders import parse_pasted_work_order_text, parse_work_order_files
 from ft_diag_agent.workflow import DiagnosticEngine
 
@@ -170,6 +207,99 @@ def start_message(engine: DiagnosticEngine, new_state: DiagnosticState, coverage
     )
 
 
+def status_label(value: str) -> str:
+    labels = {
+        "DONE": "已完成",
+        "CURRENT": "进行中",
+        "BLOCKED": "阻塞",
+        "PENDING": "待开始",
+        "SUPPORTED": "已支持",
+        "REFUTED": "已反驳",
+        "EXECUTED": "已执行",
+        "INFORMATIONAL": "信息",
+    }
+    return labels.get(value, value)
+
+
+def render_diagnostic_timeline(current: DiagnosticState) -> None:
+    rows = build_diagnostic_timeline(current)
+    st.subheader("诊断时间线")
+    st.dataframe(
+        [
+            {
+                "阶段": item.step,
+                "状态": status_label(item.status),
+                "摘要": item.summary,
+                "说明": item.detail or "-",
+                "动作": "、".join(item.action_ids) or "-",
+                "证据": "、".join(item.evidence_ids) or "-",
+                "Gate": item.gate_status or "-",
+            }
+            for item in rows
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+    blocked = [item for item in rows if item.status == "BLOCKED"]
+    current_steps = [item for item in rows if item.status == "CURRENT"]
+    if blocked:
+        st.error("当前阻塞：" + "；".join(f"{item.step}: {item.summary}" for item in blocked[:3]))
+    elif current_steps:
+        st.info("当前推进点：" + "；".join(f"{item.step}: {item.summary}" for item in current_steps[:3]))
+
+
+def render_planner_gate_explanations(current: DiagnosticState) -> None:
+    explanations = build_planner_gate_explanations(current)
+    st.subheader("Planner / Evidence / Gate 因果解释")
+    if not explanations:
+        st.caption("暂无 Planner 动作或 Gate 结果。")
+        return
+    st.dataframe(
+        [
+            {
+                "动作": item.action_id,
+                "状态": status_label(item.status),
+                "规划步骤": item.planner_step,
+                "Planner 原因": item.planned_reason,
+                "证据解释": item.evidence_summary,
+                "Gate 影响": item.gate_effect,
+                "风险提示": "；".join(item.risk_notes) or "-",
+            }
+            for item in explanations
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+
+
+def render_evidence_explorer(current: DiagnosticState) -> None:
+    rows = build_evidence_summary(current)
+    st.subheader("证据摘要")
+    if not rows:
+        st.caption("暂无证据。")
+        return
+    st.dataframe(
+        [
+            {
+                "证据ID": item.evidence_id,
+                "来源": item.source_type,
+                "来源ID": item.source_id,
+                "支持对象": item.supports,
+                "强度": item.strength,
+                "解释": item.interpretation,
+                "主张": item.claim,
+            }
+            for item in rows
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+    source_counts: dict[str, int] = {}
+    for item in rows:
+        source_counts[item.source_type] = source_counts.get(item.source_type, 0) + 1
+    st.caption("证据来源分布：" + "；".join(f"{source}={count}" for source, count in sorted(source_counts.items())))
+
+
 def render_active_node(engine: DiagnosticEngine, current: DiagnosticState) -> None:
     if current.diagnosis_mode == DiagnosisMode.CASE_ONLY_EXPLORATORY:
         st.warning("当前为非故障树覆盖的开发态探索，不展示故障树节点/分支；下方为探索计划和疑似假设。")
@@ -178,8 +308,13 @@ def render_active_node(engine: DiagnosticEngine, current: DiagnosticState) -> No
             st.write(current.case_only_plan.summary)
             st.caption(
                 f"Planner 来源：{current.case_only_plan.planner_source} · "
+                f"探索轮次：{current.case_only_plan.iteration} · "
                 f"引用证据：{', '.join(current.case_only_plan.evidence_ids[:4]) or '暂无'}"
             )
+            if current.case_only_plan.stopped_reason:
+                st.info(f"探索循环暂时停止：{current.case_only_plan.stopped_reason}")
+            if current.case_only_plan.completed_action_ids:
+                st.caption("已完成探索动作：" + "、".join(current.case_only_plan.completed_action_ids))
         if current.case_only_hypotheses:
             rows = [
                 {
@@ -188,7 +323,10 @@ def render_active_node(engine: DiagnosticEngine, current: DiagnosticState) -> No
                     "部件": item.component or "-",
                     "失效模式": item.failure_mode,
                     "置信度": item.confidence,
-                    "状态": item.status,
+                    "状态": enum_value(item.status),
+                    "支持证据数": len(item.supporting_evidence_ids),
+                    "反驳证据数": len(item.contradicting_evidence_ids),
+                    "待检查": "、".join(item.next_check_ids[:3]) or "-",
                     "依据": item.rationale,
                 }
                 for item in current.case_only_hypotheses
@@ -325,9 +463,65 @@ def render_eval_tab(engine: DiagnosticEngine, raw_docs_dir: str, datasets_dir: s
     summary = st.session_state.get("eval_summary")
     if not summary:
         st.info("点击“运行评测集”后查看诊断评测指标。")
+        render_eval_run_history(Path(datasets_dir) / "eval_runs")
         return
 
     st.caption(f"当前结果：{st.session_state.get('eval_suite', 'unknown')}")
+    current_tabs = st.tabs(["当前指标", "混淆分析", "失败复盘", "历史 Run 对比"])
+    with current_tabs[0]:
+        render_eval_summary_metrics(summary)
+        rows = [
+            {
+                "case_id": item.case_id,
+                "group": item.eval_group,
+                "mode": enum_value(item.diagnosis_mode),
+                "expected_route": item.expected_route,
+                "predicted_route": item.predicted_route,
+                "coverage": enum_value(item.coverage_status),
+                "tree": item.tree_id,
+                "active_node": item.active_node_id,
+                "gate": enum_value(item.gate_status),
+                "route_ok": item.route_correct,
+                "coverage_ok": item.coverage_correct,
+                "tree_ok": item.tree_correct,
+                "leaf_ok": item.leaf_correct,
+                "gate_ok": item.gate_correct,
+                "hypothesis_hit": item.hypothesis_hit,
+                "action_hit": item.next_action_hit,
+                "rework_hit": item.rework_or_misdiagnosis_identified,
+                "gate_safe": item.production_gate_safe,
+                "gate_mispass": item.gate_mispass,
+                "guardrail_misroute": item.guardrail_misroute,
+            }
+            for item in summary.results
+        ]
+        st.dataframe(rows, width="stretch", hide_index=True)
+    with current_tabs[1]:
+        render_eval_confusion(build_eval_confusion(summary.results))
+    with current_tabs[2]:
+        render_eval_drilldown(summary.results)
+    with current_tabs[3]:
+        render_eval_run_history(Path(datasets_dir) / "eval_runs")
+    if col_save.button("写入 datasets/eval_results + eval_runs", width="stretch"):
+        legacy_paths = write_eval_outputs(summary, Path(datasets_dir) / "eval_results")
+        artifact = write_eval_run(
+            summary,
+            Path(datasets_dir) / "eval_runs",
+            str(st.session_state.get("eval_suite", "unknown")),
+            config={
+                "raw_docs_dir": raw_docs_dir,
+                "datasets_dir": datasets_dir,
+                "ui": "streamlit",
+            },
+        )
+        st.success(
+            "已写入："
+            f"{legacy_paths['summary']}，{legacy_paths['results']}，{legacy_paths['details']}；"
+            f"Eval Run={artifact.metadata.run_id}"
+        )
+
+
+def render_eval_summary_metrics(summary) -> None:
     metrics = st.columns(7)
     metrics[0].metric("用例数", summary.cases)
     metrics[1].metric("路由", fmt_metric(summary.route_accuracy))
@@ -350,36 +544,97 @@ def render_eval_tab(engine: DiagnosticEngine, raw_docs_dir: str, datasets_dir: s
             width="stretch",
             hide_index=True,
         )
-    rows = [
-        {
-            "case_id": item.case_id,
-            "group": item.eval_group,
-            "mode": enum_value(item.diagnosis_mode),
-            "expected_route": item.expected_route,
-            "predicted_route": item.predicted_route,
-            "coverage": enum_value(item.coverage_status),
-            "tree": item.tree_id,
-            "active_node": item.active_node_id,
-            "gate": enum_value(item.gate_status),
-            "route_ok": item.route_correct,
-            "coverage_ok": item.coverage_correct,
-            "tree_ok": item.tree_correct,
-            "leaf_ok": item.leaf_correct,
-            "gate_ok": item.gate_correct,
-            "hypothesis_hit": item.hypothesis_hit,
-            "action_hit": item.next_action_hit,
-            "rework_hit": item.rework_or_misdiagnosis_identified,
-            "gate_safe": item.production_gate_safe,
-            "gate_mispass": item.gate_mispass,
-            "guardrail_misroute": item.guardrail_misroute,
-        }
-        for item in summary.results
+
+
+def render_eval_confusion(confusion: EvalConfusionReport) -> None:
+    tabs = st.tabs(["树维度", "节点维度", "Test 维度"])
+    sections = [
+        (tabs[0], confusion.tree),
+        (tabs[1], confusion.node),
+        (tabs[2], confusion.test),
     ]
-    st.dataframe(rows, width="stretch", hide_index=True)
-    render_eval_drilldown(summary.results)
-    if col_save.button("写入 datasets/eval_results", width="stretch"):
-        paths = write_eval_outputs(summary, Path(datasets_dir) / "eval_results")
-        st.success(f"已写入：{paths['summary']}，{paths['results']}，{paths['details']}")
+    for tab, rows in sections:
+        with tab:
+            if not rows:
+                st.caption("暂无混淆数据。")
+                continue
+            st.dataframe(
+                [
+                    {
+                        "expected": item.expected,
+                        "predicted": item.predicted,
+                        "count": item.count,
+                        "case_ids": "、".join(item.case_ids[:8]),
+                        "failure_tags": "、".join(item.failure_tags) or "-",
+                    }
+                    for item in rows
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+
+
+def render_eval_run_history(eval_runs_dir: Path) -> None:
+    st.subheader("历史 Run 对比")
+    runs = list_eval_runs(eval_runs_dir)
+    if not runs:
+        st.caption("暂无版本化 Eval Run。点击保存后会写入 datasets/eval_runs/{run_id}/。")
+        return
+    st.dataframe(
+        [
+            {
+                "run_id": item.run_id,
+                "suite": item.suite,
+                "created_at": item.created_at,
+                "cases": item.cases,
+            }
+            for item in runs
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+    if len(runs) < 2:
+        st.caption("至少需要两个 run 才能做 baseline/current 对比。")
+        artifact = load_eval_run(eval_runs_dir, runs[0].run_id)
+        render_eval_confusion(artifact.confusion)
+        return
+    labels = [item.run_id for item in runs]
+    left, right = st.columns([1, 1])
+    baseline_id = left.selectbox("Baseline Run", labels, index=min(1, len(labels) - 1), key="eval_baseline_run")
+    current_id = right.selectbox("Current Run", labels, index=0, key="eval_current_run")
+    baseline = load_eval_run(eval_runs_dir, baseline_id)
+    current = load_eval_run(eval_runs_dir, current_id)
+    comparison = compare_eval_runs(baseline, current)
+    render_eval_run_comparison(comparison)
+    with st.expander("Current Run 混淆分析", expanded=False):
+        render_eval_confusion(current.confusion)
+
+
+def render_eval_run_comparison(comparison) -> None:
+    if comparison.regressions:
+        st.error("关键回归：" + "；".join(comparison.regressions))
+    if comparison.warnings:
+        st.warning("指标下降：" + "；".join(comparison.warnings))
+    if not comparison.regressions and not comparison.warnings:
+        st.success("当前对比未发现指标回归。")
+    st.dataframe(
+        [
+            {
+                "metric": item.metric,
+                "baseline": item.baseline,
+                "current": item.current,
+                "delta": item.delta,
+                "status": item.status,
+                "affected_cases": "、".join(item.affected_case_ids[:8]) or "-",
+            }
+            for item in comparison.metric_deltas
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+    cols = st.columns(2)
+    cols[0].caption("新增失败 case：" + ("、".join(comparison.newly_failed_cases) or "无"))
+    cols[1].caption("已修复失败 case：" + ("、".join(comparison.resolved_failed_cases) or "无"))
 
 
 def render_eval_drilldown(results: list[EvalCaseResult]) -> None:
@@ -464,7 +719,7 @@ def render_eval_case_detail(item: EvalCaseResult) -> None:
             }
         )
 
-    detail_tabs = st.tabs(["Planner 动作", "已执行检测", "证据摘要"])
+    detail_tabs = st.tabs(["Planner 动作", "已执行检测", "证据摘要", "Replay 回放"])
     with detail_tabs[0]:
         if item.planned_actions:
             st.dataframe(item.planned_actions, width="stretch", hide_index=True)
@@ -480,13 +735,35 @@ def render_eval_case_detail(item: EvalCaseResult) -> None:
             st.dataframe(item.evidence_summary, width="stretch", hide_index=True)
         else:
             st.caption("无证据摘要。")
+    with detail_tabs[3]:
+        if not item.replay_trace:
+            st.caption("该 eval case 没有 replay trace。")
+        else:
+            st.dataframe(
+                [
+                    {
+                        "step": index + 1,
+                        "created_at": record.get("created_at"),
+                        "workflow_phase": (record.get("state_after") or {}).get("workflow_phase"),
+                        "gate": (record.get("gate_result") or {}).get("status"),
+                        "planner_actions": len(record.get("planner_output") or []),
+                        "accepted": record.get("accepted"),
+                        "has_human_decision": bool(record.get("human_decision")),
+                    }
+                    for index, record in enumerate(item.replay_trace)
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+            with st.expander("Replay JSON", expanded=False):
+                st.json(item.replay_trace)
 
 
 def _eval_case_label(item: EvalCaseResult) -> str:
     return f"{item.case_id} · {item.short_error_reason or '失败'}"
 
 
-def render_dynamic_tree_request(current: DiagnosticState) -> None:
+def render_dynamic_tree_request(current: DiagnosticState, tree_proposals_dir: str) -> None:
     request = current.fault_tree_generation_request
     if not request:
         return
@@ -506,6 +783,11 @@ def render_dynamic_tree_request(current: DiagnosticState) -> None:
         if request.candidate_tests:
             st.caption("建议检查项")
             st.write(request.candidate_tests)
+        if st.button("写入/更新 TreeProposal", key=f"upsert_proposal_{request.request_id}"):
+            store = TreeProposalStore(tree_proposals_dir)
+            proposal = store.upsert_from_generation_request(request)
+            st.success(f"已写入 TreeProposal：{proposal.proposal_id}")
+            st.rerun()
         if current.fault_tree_request_cluster:
             cluster = current.fault_tree_request_cluster
             st.divider()
@@ -530,7 +812,36 @@ def render_dynamic_tree_request(current: DiagnosticState) -> None:
             st.json(request.model_dump(mode="json"))
 
 
-def render_dynamic_tree_cluster_history(runs_dir: str) -> None:
+def render_tree_change_candidate(current: DiagnosticState, tree_proposals_dir: str) -> None:
+    proposal = current.tree_change_proposal
+    if not proposal:
+        return
+    with st.expander("已有树变更候选", expanded=True):
+        st.warning("这是 TREE_CHANGE 候选，只作为版本化 patch 审核输入；不会直接修改生产 TTL，也不会影响 Gate。")
+        cols = st.columns(4)
+        cols[0].metric("Proposal", proposal.proposal_id)
+        cols[1].metric("目标树", proposal.target_tree_id or "UNKNOWN")
+        cols[2].metric("变更类型", len(proposal.change_types))
+        cols[3].metric("漂移信号", len(proposal.drift_signals))
+        st.markdown(f"**变更摘要**：{proposal.change_summary or '待专家复核'}")
+        if proposal.change_types:
+            st.write("变更类型：", [item.value for item in proposal.change_types])
+        if proposal.drift_signals:
+            st.caption("漂移/反证信号")
+            st.write(proposal.drift_signals)
+        if proposal.candidate_tests:
+            st.caption("候选变更检查项")
+            st.write(proposal.candidate_tests)
+        if st.button("写入/更新 TreeChangeProposal", key=f"upsert_tree_change_{proposal.proposal_id}"):
+            store = TreeProposalStore(tree_proposals_dir)
+            saved = store.upsert_tree_change_proposal(proposal)
+            st.success(f"已写入 TreeChangeProposal：{saved.proposal_id}")
+            st.rerun()
+        with st.expander("变更 patch 草案 JSON", expanded=False):
+            st.json(proposal.model_dump(mode="json"))
+
+
+def render_dynamic_tree_cluster_history(runs_dir: str, tree_proposals_dir: str) -> None:
     st.subheader("跨 runs 动态故障树聚类")
     st.caption("只在点击按钮时扫描 replay；聚类结果用于开发态审核，不会写入生产 TTL。")
     if st.button("扫描 runs 聚类", width="stretch"):
@@ -558,12 +869,22 @@ def render_dynamic_tree_cluster_history(runs_dir: str) -> None:
         width="stretch",
         hide_index=True,
     )
+    if st.button("将全部聚类写入/更新 TreeProposal", width="stretch"):
+        store = TreeProposalStore(tree_proposals_dir)
+        proposals = [store.upsert_from_request_cluster(cluster) for cluster in clusters]
+        st.success(f"已写入/更新 {len(proposals)} 个 TreeProposal。")
+        st.rerun()
     selected_cluster_id = st.selectbox(
         "选择聚类",
         [item.cluster_id for item in clusters],
         key="dynamic_tree_cluster_select",
     )
     selected = next(item for item in clusters if item.cluster_id == selected_cluster_id)
+    if st.button("将选中聚类写入/更新 TreeProposal", key=f"upsert_cluster_{selected.cluster_id}"):
+        store = TreeProposalStore(tree_proposals_dir)
+        proposal = store.upsert_from_request_cluster(selected)
+        st.success(f"已写入 TreeProposal：{proposal.proposal_id}")
+        st.rerun()
     st.json(selected.model_dump(mode="json"))
 
 
@@ -838,6 +1159,9 @@ def render_tree_generation_job(
         else:
             st.success("暂无结构校验问题。")
     with detail_tabs[4]:
+        flash = st.session_state.pop("tree_generation_hitl_flash", None)
+        if flash:
+            st.success(flash)
         hitl_items = generation_hitl_items(job.artifact)
         if hitl_items:
             st.info("以下字段来自 MISSING 或 EXTRACTED_INFERRED，应进入树生成阶段 HITL 补全/确认。")
@@ -847,7 +1171,6 @@ def render_tree_generation_job(
                 updated = service.generate_hitl_suggestions(job.job_id, rag=rag, use_llm=service.settings.llm_enable)
                 if updated and updated.artifact:
                     st.session_state["last_tree_generation_job_id"] = updated.job_id
-                    st.session_state["tree_generation_job_select"] = updated.job_id
                     st.success(f"已生成 {len(updated.artifact.hitl_suggestions)} 条专家建议。")
                     st.rerun()
             if job.artifact.hitl_suggestions:
@@ -894,7 +1217,10 @@ def render_generation_hitl_suggestions(service: BatchTreeGenerationService, job)
                 )
                 for option in suggestion.options
             }
-            action_options = [*option_labels.keys(), "__KEEP__", "__MANUAL__", "__MORE__", "__REJECT__"]
+            action_options = [*option_labels.keys()]
+            if suggestion.current_value not in (None, "", []):
+                action_options.append("__KEEP__")
+            action_options.extend(["__MANUAL__", "__MORE__", "__REJECT__"])
             with st.form(f"hitl_decision_{job.job_id}_{suggestion.suggestion_id}"):
                 selected = st.radio(
                     "确认动作",
@@ -913,12 +1239,18 @@ def render_generation_hitl_suggestions(service: BatchTreeGenerationService, job)
                 rationale = st.text_input("确认说明", value="")
                 submitted = st.form_submit_button("确认写回")
             if submitted:
+                if selected == "__MANUAL__" and not manual_value.strip():
+                    st.error("选择手动修订时必须填写修订值。")
+                    continue
+                before_count = len(generation_hitl_items(job.artifact))
                 decision = _build_hitl_decision(suggestion, selected, manual_value, rationale)
                 updated = service.apply_hitl_decision(job.job_id, decision)
                 if updated:
+                    after_count = len(generation_hitl_items(updated.artifact)) if updated.artifact else before_count
                     st.session_state["last_tree_generation_job_id"] = updated.job_id
-                    st.session_state["tree_generation_job_select"] = updated.job_id
-                    st.success("已写回草稿并重跑校验。")
+                    st.session_state["tree_generation_hitl_flash"] = (
+                        f"已写回草稿并重跑校验。待补全字段：{before_count} -> {after_count}。"
+                    )
                     st.rerun()
             for option in suggestion.options:
                 st.markdown(f"**建议：{_format_hitl_value(option.value)}**")
@@ -969,13 +1301,21 @@ def _format_hitl_value(value: object) -> str:
     return str(value)
 
 
-def render_tree_proposal_review(tree_proposals_dir: str) -> None:
+def render_tree_proposal_review(
+    tree_proposals_dir: str,
+    runs_dir: str,
+    released_tree_registry_dir: str,
+    production_ttl_path: str,
+) -> None:
     store = TreeProposalStore(tree_proposals_dir)
     proposals = store.load_proposals()
     st.subheader("TreeProposal 审核")
     st.caption("审核动作只更新 proposal store 和 review log；不会写正式 TTL，也不能让 Gate PASS。")
     if not proposals:
-        st.info("暂无 TreeProposal。请先从批量文档 Tree Generation 生成 DRAFT_TREE。")
+        st.info(
+            "暂无 TreeProposal。请先从批量文档 Tree Generation "
+            "或开发态 case-only/跨 runs 聚类入口生成 DRAFT_TREE。"
+        )
         return
     status_options = ["ALL", *sorted({proposal.status.value for proposal in proposals})]
     selected_status = st.selectbox("状态筛选", status_options, key="proposal_status_filter")
@@ -997,7 +1337,7 @@ def render_tree_proposal_review(tree_proposals_dir: str) -> None:
     cols[1].metric("状态", proposal.status)
     cols[2].metric("roots", len(proposal.root_cause_families))
     cols[3].metric("tests", len(proposal.candidate_tests))
-    cols[4].metric("来源 job", proposal.source_job_id or "N/A")
+    cols[4].metric("来源", _proposal_source_label(proposal))
     st.write(proposal.confidence_summary)
     if proposal.risk_notes:
         st.warning("；".join(proposal.risk_notes))
@@ -1005,10 +1345,73 @@ def render_tree_proposal_review(tree_proposals_dir: str) -> None:
     review_logs = store.load_review_logs(proposal.proposal_id)
     case_links = store.load_case_links(proposal.proposal_id)
     eval_results = store.load_eval_results(proposal.proposal_id)
-    tabs = st.tabs(["概览", "审核动作", "审核日志", "关联案例", "Eval", "Artifact"])
+    all_case_links = store.load_case_links()
+    all_eval_results = store.load_eval_results()
+    all_review_logs = store.load_review_logs()
+    aggregate_report = build_tree_proposal_aggregate_report(
+        proposal,
+        proposals=proposals,
+        case_links=all_case_links,
+        eval_results=all_eval_results,
+        review_logs=all_review_logs,
+    )
+    artifact = store.load_artifact_snapshot(proposal.proposal_id)
+    release_artifact = store.load_release_artifact(proposal.proposal_id)
+    gray_admission_package = build_gray_admission_package(
+        proposal,
+        artifact=artifact,
+        case_links=case_links,
+        eval_results=eval_results,
+        review_logs=review_logs,
+    )
+    release_admission_package = build_release_admission_package(
+        proposal,
+        eval_results=eval_results,
+        review_logs=review_logs,
+        release_artifact=release_artifact,
+    )
+    precheck = assess_tree_proposal_promotion(
+        proposal,
+        artifact=artifact,
+        case_links=case_links,
+        eval_results=eval_results,
+        review_logs=review_logs,
+        release_artifact=release_artifact,
+        aggregate_report=aggregate_report,
+    )
+    lifecycle_steps = tree_proposal_lifecycle_steps(
+        proposal,
+        artifact=artifact,
+        case_links=case_links,
+        eval_results=eval_results,
+        review_logs=review_logs,
+        precheck=precheck,
+    )
+    render_tree_proposal_lifecycle(lifecycle_steps)
+    tabs = st.tabs(
+        [
+            "候选树结构",
+            "概览",
+            "跨 Proposal 聚合",
+            "准入材料",
+            "审核动作",
+            "审核日志",
+            "关联案例",
+            "Eval",
+            "Release",
+            "Artifact",
+        ]
+    )
     with tabs[0]:
-        st.json(proposal.model_dump(mode="json"))
+        render_tree_proposal_candidate_tree(proposal, artifact)
     with tabs[1]:
+        st.json(proposal.model_dump(mode="json"))
+    with tabs[3]:
+        render_tree_admission_packages(gray_admission_package, release_admission_package)
+    with tabs[2]:
+        render_tree_proposal_aggregate_report(aggregate_report)
+    with tabs[4]:
+        render_tree_proposal_precheck(precheck)
         with st.form(f"proposal_review_{proposal.proposal_id}"):
             decision = st.radio(
                 "审核结论",
@@ -1034,33 +1437,114 @@ def render_tree_proposal_review(tree_proposals_dir: str) -> None:
                     reviewer=reviewer.strip() or None,
                     rationale=rationale.strip(),
                     required_changes=required_changes,
+                    precheck_result=precheck.model_dump(mode="json"),
                 )
                 if log:
                     st.success(f"已写入审核日志：{log.from_status} -> {log.to_status}")
                     st.rerun()
                 else:
                     st.error("未找到 proposal，审核写入失败。")
-    with tabs[2]:
+    with tabs[5]:
         if review_logs:
             st.dataframe([item.model_dump(mode="json") for item in review_logs], width="stretch", hide_index=True)
         else:
             st.info("暂无审核日志。")
-    with tabs[3]:
+    with tabs[6]:
         if case_links:
             st.dataframe([item.model_dump(mode="json") for item in case_links], width="stretch", hide_index=True)
         else:
             st.info("暂无关联 case link。")
-    with tabs[4]:
-        if st.button("运行 Tree Proposal Eval", key=f"run_tree_proposal_eval_{proposal.proposal_id}"):
+    with tabs[7]:
+        eval_quality, eval_left, eval_right = st.columns(3)
+        if eval_quality.button(
+            "运行抽取质量 Eval",
+            key=f"run_tree_generation_extraction_eval_{proposal.proposal_id}",
+        ):
+            result = run_tree_generation_extraction_eval(store, proposal.proposal_id)
+            if result:
+                st.success("抽取质量 Eval 已完成并写入 eval_results.jsonl。")
+                st.rerun()
+            else:
+                st.error("未找到 proposal，评测失败。")
+        if eval_left.button("运行结构 Tree Proposal Eval", key=f"run_tree_proposal_eval_{proposal.proposal_id}"):
             result = run_tree_proposal_eval(store, proposal.proposal_id)
             if result:
                 st.success("Tree Proposal Eval 已完成并写入 eval_results.jsonl。")
                 st.rerun()
             else:
                 st.error("未找到 proposal，评测失败。")
+        if eval_right.button(
+            "运行 Replay / Shadow Eval",
+            key=f"run_tree_proposal_shadow_eval_{proposal.proposal_id}",
+        ):
+            result = run_tree_proposal_replay_shadow_eval(
+                store,
+                proposal.proposal_id,
+                runs_dir=runs_dir,
+            )
+            if result:
+                st.success("Replay / Shadow Eval 已完成并写入 eval_results.jsonl。")
+                st.rerun()
+            else:
+                st.error("未找到 proposal，评测失败。")
         if eval_results:
-            latest_eval = eval_results[-1]
+            extraction_eval = store.latest_eval_result(
+                proposal.proposal_id,
+                TREE_GENERATION_EXTRACTION_EVAL_SUITE,
+            )
+            structure_eval = store.latest_eval_result(proposal.proposal_id, TREE_PROPOSAL_EVAL_SUITE)
+            shadow_eval = store.latest_eval_result(proposal.proposal_id, TREE_PROPOSAL_REPLAY_SHADOW_EVAL_SUITE)
+            if extraction_eval:
+                st.markdown("**抽取质量 Eval**")
+                extraction_metrics = extraction_eval.metrics
+                extraction_cols = st.columns(5)
+                extraction_cols[0].metric(
+                    "structure",
+                    fmt_metric(extraction_metrics.get("ontology_structure_score")),
+                )
+                extraction_cols[1].metric(
+                    "grounding",
+                    fmt_metric(extraction_metrics.get("grounding_precision")),
+                )
+                extraction_cols[2].metric(
+                    "hallucination",
+                    fmt_metric(extraction_metrics.get("hallucination_rate")),
+                )
+                extraction_cols[3].metric(
+                    "path",
+                    fmt_metric(extraction_metrics.get("path_coherence_score")),
+                )
+                extraction_cols[4].metric(
+                    "recall",
+                    fmt_metric(extraction_metrics.get("source_fact_recall")),
+                )
+                if extraction_eval.unsafe_findings:
+                    st.warning("抽取质量提示：" + "；".join(extraction_eval.unsafe_findings))
+                with st.expander("抽取质量明细", expanded=False):
+                    detail_tabs = st.tabs(["Source Facts", "Grounding", "Path Coherence"])
+                    with detail_tabs[0]:
+                        st.dataframe(
+                            extraction_metrics.get("source_fact_rows") or [],
+                            width="stretch",
+                            hide_index=True,
+                        )
+                    with detail_tabs[1]:
+                        st.dataframe(
+                            extraction_metrics.get("artifact_grounding_rows") or [],
+                            width="stretch",
+                            hide_index=True,
+                        )
+                    with detail_tabs[2]:
+                        st.dataframe(
+                            extraction_metrics.get("path_coherence_rows") or [],
+                            width="stretch",
+                            hide_index=True,
+                        )
+            else:
+                st.info("暂无抽取质量 Eval。DRAFT_TREE 进入 CANDIDATE_TREE 前必须运行。")
+            latest_eval = structure_eval or eval_results[-1]
             metrics = latest_eval.metrics
+            st.markdown("**结构 Eval**")
             metric_cols = st.columns(5)
             metric_cols[0].metric("schema", "PASS" if metrics.get("schema_valid") else "FAIL")
             metric_cols[1].metric("candidate", "READY" if metrics.get("candidate_ready") else "BLOCKED")
@@ -1073,10 +1557,48 @@ def render_tree_proposal_review(tree_proposals_dir: str) -> None:
             )
             if latest_eval.unsafe_findings:
                 st.warning("阻塞项：" + "；".join(latest_eval.unsafe_findings))
+            if shadow_eval:
+                st.markdown("**Replay / Shadow Eval**")
+                shadow_metrics = shadow_eval.metrics
+                shadow_cols = st.columns(5)
+                shadow_cols[0].metric(
+                    "shadow",
+                    "READY" if shadow_metrics.get("shadow_ready") else "BLOCKED",
+                )
+                shadow_cols[1].metric("records", shadow_metrics.get("replay_record_count", 0))
+                shadow_cols[2].metric("relevant", shadow_metrics.get("shadow_relevant_case_count", 0))
+                support_rate = shadow_metrics.get("shadow_support_rate")
+                shadow_cols[3].metric(
+                    "support",
+                    f"{support_rate:.0%}" if isinstance(support_rate, float) else "N/A",
+                )
+                test_rate = shadow_metrics.get("shadow_test_hit_rate")
+                shadow_cols[4].metric(
+                    "test hit",
+                    f"{test_rate:.0%}" if isinstance(test_rate, float) else "N/A",
+                )
+                if shadow_eval.unsafe_findings:
+                    st.warning("Shadow 阻塞项：" + "；".join(shadow_eval.unsafe_findings))
+                if shadow_eval.failure_cases:
+                    with st.expander("Replay / Shadow 失败案例", expanded=False):
+                        st.dataframe(shadow_eval.failure_cases, width="stretch", hide_index=True)
+            else:
+                st.info("暂无 Replay / Shadow Eval。CANDIDATE_TREE 进入 GRAY_TREE 前必须运行。")
             st.dataframe([item.model_dump(mode="json") for item in eval_results], width="stretch", hide_index=True)
         else:
             st.info("暂无 Tree Proposal Eval 结果。")
-    with tabs[5]:
+    with tabs[8]:
+        render_tree_proposal_release_materials(
+            store,
+            proposal,
+            artifact,
+            eval_results,
+            review_logs,
+            release_artifact,
+            released_tree_registry_dir,
+            production_ttl_path,
+        )
+    with tabs[9]:
         artifact_path = Path(tree_proposals_dir) / "artifacts" / proposal.proposal_id / "artifact.json"
         if artifact_path.exists():
             st.json(artifact_path.read_text(encoding="utf-8"))
@@ -1089,10 +1611,452 @@ def _proposal_label(proposal) -> str:
     return f"{updated_at} · {proposal.proposal_id} · {proposal.status} · {proposal.candidate_start_symptom}"
 
 
+def render_tree_proposal_lifecycle(steps) -> None:
+    st.markdown("**从资料到生产 TTL 的流程状态**")
+    cards = []
+    for step in steps:
+        style = _lifecycle_style(step.status)
+        cards.append(
+            "<div class='tp-step' "
+            f"style='border-color:{style['border']};background:{style['background']};'>"
+            f"<div class='tp-step-label'>{escape(step.label)}</div>"
+            f"<div class='tp-step-status' style='color:{style['text']};'>"
+            f"{escape(_lifecycle_status_label(step.status))}</div>"
+            f"<div class='tp-step-detail'>{escape(step.detail)}</div>"
+            "</div>"
+        )
+    st.markdown(
+        """
+<style>
+.tp-step-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 6px 0 16px 0;
+}
+.tp-step {
+  border: 1px solid;
+  border-radius: 8px;
+  padding: 10px;
+  min-height: 92px;
+}
+.tp-step-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: #111827;
+  margin-bottom: 4px;
+}
+.tp-step-status {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.tp-step-detail {
+  font-size: 12px;
+  line-height: 1.35;
+  color: #374151;
+}
+@media (max-width: 900px) {
+  .tp-step-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .tp-step-grid { grid-template-columns: 1fr; }
+}
+</style>
+"""
+        + "<div class='tp-step-grid'>"
+        + "".join(cards)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_tree_proposal_candidate_tree(proposal, artifact) -> None:
+    if artifact:
+        st.success("当前 proposal 已有 TreeGenerationArtifact，可按真实 L1/L2/L3 proposed tree 审核。")
+        mermaid = render_tree_generation_mermaid(artifact)
+        st.markdown(f"```mermaid\n{mermaid}\n```")
+        with st.expander("Mermaid 源码", expanded=False):
+            st.code(mermaid, language="mermaid")
+        left, right = st.columns([1, 1])
+        with left:
+            st.caption("节点（FailureSymptom）")
+            st.dataframe(artifact_node_rows(artifact), width="stretch", hide_index=True)
+        with right:
+            st.caption("诊断转移（SymptomTransition / test on edge）")
+            st.dataframe(artifact_transition_rows(artifact), width="stretch", hide_index=True)
+        return
+    st.warning(
+        "当前 proposal 缺少 TreeGenerationArtifact，只能展示 DISCOVERY_ONLY skeleton；"
+        "这还不是完整 proposed tree，不能据此进入 CANDIDATE_TREE。"
+    )
+    mermaid = proposal_skeleton_mermaid(proposal)
+    st.markdown(f"```mermaid\n{mermaid}\n```")
+    with st.expander("Mermaid 源码", expanded=False):
+        st.code(mermaid, language="mermaid")
+    left, right = st.columns([1, 1])
+    with left:
+        st.caption("proposal skeleton 节点")
+        st.dataframe(proposal_skeleton_node_rows(proposal), width="stretch", hide_index=True)
+    with right:
+        st.caption("proposal skeleton 转移")
+        st.dataframe(proposal_skeleton_transition_rows(proposal), width="stretch", hide_index=True)
+
+
+def render_tree_proposal_precheck(precheck) -> None:
+    st.markdown("**晋升预审**")
+    cols = st.columns(4)
+    cols[0].metric("结论", precheck.verdict)
+    cols[1].metric("当前状态", precheck.current_status)
+    cols[2].metric("目标状态", precheck.target_status or "N/A")
+    cols[3].metric("阻塞项", len(precheck.blockers))
+    if precheck.verdict == "READY_FOR_REVIEW":
+        st.success("预审通过：材料具备提交人工审核的最低条件。")
+    elif precheck.verdict == "NEEDS_MORE_EVIDENCE":
+        st.warning("预审未阻塞，但仍建议补充证据或案例后再审核。")
+    elif precheck.verdict == "BLOCKED":
+        st.error("预审阻塞：仍可人工覆盖审核，但必须在审核理由中说明风险接受依据。")
+    else:
+        st.info("当前状态没有可执行的预审晋升目标。")
+    if precheck.blockers:
+        st.caption("阻塞项")
+        for item in precheck.blockers:
+            st.write(f"- {item}")
+    if precheck.warnings:
+        st.caption("警告项")
+        for item in precheck.warnings:
+            st.write(f"- {item}")
+    if precheck.recommended_actions:
+        st.caption("建议动作")
+        for item in precheck.recommended_actions:
+            st.write(f"- {item}")
+    with st.expander("预审 JSON", expanded=False):
+        st.json(precheck.model_dump(mode="json"))
+
+
+def render_tree_proposal_aggregate_report(report: TreeProposalAggregateReport) -> None:
+    st.markdown("**跨 Proposal 聚合预审证据**")
+    st.caption("聚合结果只辅助专家审核和预审阻塞判断；不会自动晋升、不会写生产 TTL，也不会影响 Gate。")
+    cols = st.columns(5)
+    cols[0].metric("bucket", report.phenomenon_bucket)
+    cols[1].metric("同类 proposal", report.bucket_proposal_count)
+    cols[2].metric("支持 case", report.bucket_support_case_count)
+    cols[3].metric("反证 case", report.bucket_refute_case_count)
+    cols[4].metric(
+        "人工确认率",
+        f"{report.bucket_human_confirmation_rate:.0%}"
+        if isinstance(report.bucket_human_confirmation_rate, float)
+        else "N/A",
+    )
+    if report.blockers:
+        st.error("聚合阻塞：" + "；".join(report.blockers))
+    if report.warnings:
+        st.warning("聚合提示：" + "；".join(report.warnings))
+    if report.satisfied and not report.blockers and not report.warnings:
+        st.success("；".join(report.satisfied))
+    tabs = st.tabs(["Root Cause Family", "Repeated Test", "高风险反证", "JSON"])
+    with tabs[0]:
+        if report.root_cause_families:
+            st.dataframe(
+                [
+                    {
+                        "root_cause_family": item.root_cause_family,
+                        "proposal_count": len(item.proposal_ids),
+                        "support_cases": item.support_case_count,
+                        "refute_cases": item.refute_case_count,
+                        "ambiguous_cases": item.ambiguous_case_count,
+                        "human_confirmed": item.human_confirmed_count,
+                        "human_rejected": item.human_rejected_count,
+                        "confirmation_rate": item.human_confirmation_rate,
+                        "risk_count": item.high_risk_counter_evidence_count,
+                        "statuses": item.statuses,
+                    }
+                    for item in report.root_cause_families
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+        else:
+            st.caption("暂无 root cause family 聚合。")
+    with tabs[1]:
+        if report.repeated_tests:
+            st.dataframe(
+                [
+                    {
+                        "test": item.test_name,
+                        "proposal_count": len(item.proposal_ids),
+                        "support_cases": item.support_case_count,
+                        "refute_cases": item.refute_case_count,
+                        "human_confirmed": item.human_confirmed_count,
+                        "human_rejected": item.human_rejected_count,
+                        "confirmation_rate": item.human_confirmation_rate,
+                        "risk_count": item.high_risk_counter_evidence_count,
+                    }
+                    for item in report.repeated_tests
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+        else:
+            st.caption("暂无 repeated test 聚合。")
+    with tabs[2]:
+        if report.high_risk_counter_evidence:
+            st.dataframe(
+                [item.model_dump(mode="json") for item in report.high_risk_counter_evidence],
+                width="stretch",
+                hide_index=True,
+            )
+        else:
+            st.success("同类 proposal 暂无高风险反证。")
+    with tabs[3]:
+        st.json(report.model_dump(mode="json"))
+
+
+def render_tree_admission_packages(gray_package, release_package) -> None:
+    st.markdown("**准入材料审计**")
+    st.caption("材料包只做审核和阻塞判断，不会写生产 TTL，也不会改变 Gate。")
+    gray_tab, release_tab = st.tabs(["GRAY 准入", "RELEASED 准入"])
+    with gray_tab:
+        render_tree_admission_package(gray_package)
+    with release_tab:
+        render_tree_admission_package(release_package)
+
+
+def render_tree_admission_package(package) -> None:
+    cols = st.columns(4)
+    cols[0].metric("阶段", package.stage)
+    cols[1].metric("目标状态", package.target_status)
+    cols[2].metric("准入", "READY" if package.ready_for_review else "BLOCKED")
+    cols[3].metric("阻塞项", len(package.blockers))
+    rows = [item.model_dump(mode="json") for item in package.materials]
+    st.dataframe(rows, width="stretch", hide_index=True)
+    if package.blockers:
+        st.warning("阻塞项：" + "；".join(package.blockers))
+    if package.warnings:
+        st.info("警告项：" + "；".join(package.warnings))
+    if package.recommended_actions:
+        with st.expander("建议动作", expanded=False):
+            for item in package.recommended_actions:
+                st.write(f"- {item}")
+    with st.expander("Admission Package JSON", expanded=False):
+        st.json(package.model_dump(mode="json"))
+
+
+def render_tree_proposal_release_materials(
+    store,
+    proposal,
+    artifact,
+    eval_results,
+    review_logs,
+    release_artifact,
+    released_tree_registry_dir,
+    production_ttl_path,
+) -> None:
+    st.markdown("**发布前材料包**")
+    st.caption("这里只生成 release manifest、rollback metadata 和 TTL diff 审核材料；不会写正式 TTL。")
+    with st.form(f"release_materials_{proposal.proposal_id}"):
+        generated_by = st.text_input("材料生成人", value="")
+        release_version = st.text_input("发布版本（可留空自动生成）", value="")
+        formal_signoff_reviewer = st.text_input("正式发布签核人", value="")
+        formal_signoff_rationale = st.text_area("正式发布签核依据", value="", height=80)
+        submitted = st.form_submit_button("生成发布材料包")
+    if submitted:
+        artifact_result = build_tree_release_artifact(
+            proposal,
+            artifact,
+            eval_results=eval_results,
+            review_logs=review_logs,
+            generated_by=generated_by.strip() or None,
+            formal_signoff_reviewer=formal_signoff_reviewer.strip() or None,
+            formal_signoff_rationale=formal_signoff_rationale.strip() or None,
+            release_version=release_version.strip() or None,
+        )
+        store.save_release_artifact(artifact_result)
+        if artifact_result.release_materials_ready:
+            st.success("发布材料包已生成，且未发现材料阻塞项。")
+        else:
+            st.warning("发布材料包已生成，但仍存在阻塞项。")
+        st.rerun()
+    if not release_artifact:
+        st.info("暂无发布材料包。GRAY_TREE 进入 RELEASED_TREE 前必须生成并通过预审。")
+        return
+    cols = st.columns(4)
+    cols[0].metric("materials", "READY" if release_artifact.release_materials_ready else "BLOCKED")
+    cols[1].metric("version", release_artifact.manifest.release_version)
+    cols[2].metric("blockers", len(release_artifact.blockers))
+    cols[3].metric("warnings", len(release_artifact.warnings))
+    if release_artifact.blockers:
+        st.warning("阻塞项：" + "；".join(release_artifact.blockers))
+    if release_artifact.warnings:
+        st.info("警告项：" + "；".join(release_artifact.warnings))
+    release_tabs = st.tabs(["Manifest", "Rollback", "TTL Diff", "Release Artifact JSON"])
+    with release_tabs[0]:
+        st.json(release_artifact.manifest.model_dump(mode="json"))
+    with release_tabs[1]:
+        st.json(release_artifact.rollback.model_dump(mode="json"))
+    with release_tabs[2]:
+        st.markdown(release_artifact.ttl_diff_md)
+    with release_tabs[3]:
+        st.json(release_artifact.model_dump(mode="json"))
+    st.divider()
+    render_released_tree_registry_audit(
+        proposal,
+        release_artifact,
+        released_tree_registry_dir,
+        production_ttl_path,
+    )
+
+
+def render_released_tree_registry_audit(
+    proposal,
+    release_artifact,
+    released_tree_registry_dir: str,
+    production_ttl_path: str,
+) -> None:
+    st.markdown("**生产 TTL 写入执行 / Released Tree Registry**")
+    st.caption(
+        "发布执行分为 READY 审计登记、受控 TTL 写入、rollback dry-run 和受控 rollback；"
+        "写入只允许消费 READY_FOR_TTL_WRITE registry entry。"
+    )
+    registry = ReleasedTreeRegistry(released_tree_registry_dir)
+    action_cols = st.columns(4)
+    with action_cols[0]:
+        if st.button("登记 READY", key=f"registry_audit_{proposal.proposal_id}"):
+            audit = registry.audit_and_register_ready_entry(
+                proposal,
+                release_artifact,
+                production_ttl_path=production_ttl_path,
+            )
+            if audit.verdict == "READY_FOR_TTL_WRITE":
+                st.success("审计通过：已登记 READY_FOR_TTL_WRITE。")
+            else:
+                st.warning("审计阻塞：已写入 audit result，但不会写 registry ready entry。")
+            st.rerun()
+    with action_cols[1]:
+        if st.button("执行 TTL 写入", key=f"registry_write_{proposal.proposal_id}"):
+            result = registry.execute_production_ttl_write(
+                proposal,
+                release_artifact,
+                production_ttl_path=production_ttl_path,
+            )
+            if result.verdict == "REGISTERED":
+                st.success("生产 TTL 写入完成：registry entry 已更新为 REGISTERED。")
+            else:
+                st.warning("生产 TTL 写入被阻塞，未修改 TTL。")
+            st.rerun()
+    with action_cols[2]:
+        if st.button("Rollback dry-run", key=f"registry_rollback_dry_run_{proposal.proposal_id}"):
+            result = registry.rollback_production_ttl_write(
+                proposal.proposal_id,
+                production_ttl_path=production_ttl_path,
+                dry_run=True,
+            )
+            if result.verdict == "ROLLBACK_READY":
+                st.success("回滚演练通过：备份可用，未修改 TTL。")
+            else:
+                st.warning("回滚演练阻塞。")
+            st.rerun()
+    with action_cols[3]:
+        if st.button("执行 rollback", key=f"registry_rollback_{proposal.proposal_id}"):
+            result = registry.rollback_production_ttl_write(
+                proposal.proposal_id,
+                production_ttl_path=production_ttl_path,
+                dry_run=False,
+            )
+            if result.verdict == "ROLLED_BACK":
+                st.success("回滚完成：生产 TTL 已从备份恢复，registry entry 已标记 ROLLED_BACK。")
+            else:
+                st.warning("回滚被阻塞，未修改 TTL。")
+            st.rerun()
+    latest = registry.latest_audit_result(proposal.proposal_id)
+    latest_write = registry.latest_write_result(proposal.proposal_id)
+    latest_rollback = registry.latest_rollback_result(proposal.proposal_id)
+    entries = [
+        item
+        for item in registry.load_entries()
+        if item.proposal_id == proposal.proposal_id
+        or item.candidate_tree_id == release_artifact.manifest.candidate_tree_id
+    ]
+    if latest:
+        cols = st.columns(4)
+        cols[0].metric("audit", latest.verdict)
+        cols[1].metric("tree_id", latest.candidate_tree_id or "N/A")
+        cols[2].metric("blockers", len(latest.blockers))
+        cols[3].metric("warnings", len(latest.warnings))
+        if latest.blockers:
+            st.warning("阻塞项：" + "；".join(latest.blockers))
+        if latest.warnings:
+            st.info("警告项：" + "；".join(latest.warnings))
+        with st.expander("TTL Audit JSON", expanded=False):
+            st.json(latest.model_dump(mode="json"))
+    else:
+        st.info("暂无生产 TTL 写入审计记录。")
+    if latest_write:
+        write_cols = st.columns(4)
+        write_cols[0].metric("write", latest_write.verdict)
+        write_cols[1].metric("tree_id", latest_write.candidate_tree_id or "N/A")
+        write_cols[2].metric("blockers", len(latest_write.blockers))
+        write_cols[3].metric("warnings", len(latest_write.warnings))
+        if latest_write.blockers:
+            st.warning("写入阻塞项：" + "；".join(latest_write.blockers))
+        if latest_write.warnings:
+            st.info("写入警告项：" + "；".join(latest_write.warnings))
+        with st.expander("TTL Write JSON", expanded=False):
+            st.json(latest_write.model_dump(mode="json"))
+    if latest_rollback:
+        rollback_cols = st.columns(4)
+        rollback_cols[0].metric("rollback", latest_rollback.verdict)
+        rollback_cols[1].metric("dry-run", "YES" if latest_rollback.dry_run else "NO")
+        rollback_cols[2].metric("blockers", len(latest_rollback.blockers))
+        rollback_cols[3].metric("warnings", len(latest_rollback.warnings))
+        if latest_rollback.blockers:
+            st.warning("回滚阻塞项：" + "；".join(latest_rollback.blockers))
+        if latest_rollback.warnings:
+            st.info("回滚警告项：" + "；".join(latest_rollback.warnings))
+        with st.expander("TTL Rollback JSON", expanded=False):
+            st.json(latest_rollback.model_dump(mode="json"))
+    if entries:
+        st.dataframe([item.model_dump(mode="json") for item in entries], width="stretch", hide_index=True)
+    else:
+        st.caption("当前 proposal 尚无 Released Tree registry READY 记录。")
+
+
+def _lifecycle_style(status: str) -> dict[str, str]:
+    styles = {
+        "DONE": {"border": "#16a34a", "background": "#f0fdf4", "text": "#15803d"},
+        "CURRENT": {"border": "#2563eb", "background": "#eff6ff", "text": "#1d4ed8"},
+        "WARNING": {"border": "#d97706", "background": "#fffbeb", "text": "#b45309"},
+        "BLOCKED": {"border": "#dc2626", "background": "#fef2f2", "text": "#b91c1c"},
+        "PENDING": {"border": "#d1d5db", "background": "#f9fafb", "text": "#6b7280"},
+    }
+    return styles.get(status, styles["PENDING"])
+
+
+def _lifecycle_status_label(status: str) -> str:
+    return {
+        "DONE": "已完成",
+        "CURRENT": "当前步骤",
+        "WARNING": "需补充",
+        "BLOCKED": "阻塞",
+        "PENDING": "未开始",
+    }.get(status, status)
+
+
+def _proposal_source_label(proposal) -> str:
+    if proposal.source_job_id:
+        return f"job:{proposal.source_job_id}"
+    if proposal.source_request_id:
+        return f"request:{proposal.source_request_id}"
+    if proposal.source_cluster_id:
+        return f"cluster:{proposal.source_cluster_id}"
+    return proposal.source_type or "N/A"
+
+
 base_settings = Settings()
 
 with st.sidebar:
     st.header("配置")
+    app_page = st.radio("页面", ["诊断工作台", "树生成工作台"], horizontal=False)
     ttl_path = st.text_input("故障树 TTL", str(base_settings.fault_tree_ttl_path))
     raw_docs_dir = st.text_input("真实文档目录", str(base_settings.raw_docs_dir))
     chroma_dir = st.text_input("Chroma 缓存目录", str(base_settings.chroma_dir))
@@ -1100,6 +2064,10 @@ with st.sidebar:
     datasets_dir = st.text_input("Datasets 目录", str(base_settings.datasets_dir))
     tree_generation_dir = st.text_input("Tree Generation 目录", str(base_settings.tree_generation_dir))
     tree_proposals_dir = st.text_input("Tree Proposals 目录", str(base_settings.tree_proposals_dir))
+    released_tree_registry_dir = st.text_input(
+        "Released Tree Registry 目录",
+        str(base_settings.released_tree_registry_dir),
+    )
     collection = st.text_input("RAG collection", base_settings.rag_collection_name)
     chunk_size = st.number_input("Chunk size", min_value=200, max_value=3000, value=base_settings.rag_chunk_size)
     overlap = st.number_input("Chunk overlap", min_value=0, max_value=1000, value=base_settings.rag_chunk_overlap)
@@ -1127,6 +2095,30 @@ with st.sidebar:
     except Exception as exc:
         st.warning(f"文档扫描失败：{exc}")
 
+if app_page == "树生成工作台":
+    st.title("树生成工作台")
+    st.caption("批量文档树生成、树生成 HITL 补全、TreeProposal 审核与发布前材料准备。")
+    render_tree_generation_entry(
+        str(raw_docs_dir),
+        str(chroma_dir),
+        collection,
+        int(chunk_size),
+        int(overlap),
+        str(tree_generation_dir),
+        str(tree_proposals_dir),
+        enable_llm,
+        llm_provider,
+        openai_model,
+    )
+    st.divider()
+    render_tree_proposal_review(
+        str(tree_proposals_dir),
+        str(runs_dir),
+        str(released_tree_registry_dir),
+        str(ttl_path),
+    )
+    st.stop()
+
 st.title("故障树诊断 Agent")
 
 try:
@@ -1149,23 +2141,6 @@ except Exception as exc:
     st.stop()
 
 mock_orders = load_mock_work_orders(str(raw_docs_dir))
-
-with st.expander("树生成：批量文档预生成候选树", expanded=False):
-    render_tree_generation_entry(
-        str(raw_docs_dir),
-        str(chroma_dir),
-        collection,
-        int(chunk_size),
-        int(overlap),
-        str(tree_generation_dir),
-        str(tree_proposals_dir),
-        enable_llm,
-        llm_provider,
-        openai_model,
-    )
-
-with st.expander("TreeProposal 审核", expanded=False):
-    render_tree_proposal_review(str(tree_proposals_dir))
 
 st.subheader("工单驱动诊断输入")
 input_mode = st.radio(
@@ -1262,8 +2237,10 @@ else:
         reasons = "；".join(current.gate_result.blocking_reasons or current.gate_result.risk_notes)
         if reasons:
             st.caption(f"Gate 未 PASS 原因：{reasons}")
-    if current.planned_actions:
-        st.info("Planner 已生成待人工检测项，请进入“当前节点 / HITL”页录入检测结果。")
+    if current.waiting_for_human:
+        st.info("工作流正在等待人工检测结果，请进入“当前节点 / HITL”页录入。")
+    elif current.planned_actions:
+        st.info("Planner 已生成非阻塞建议动作，可进入“当前节点 / HITL”页补充验证。")
     elif current.final_report and not (
         current.coverage_decision
         and current.coverage_decision.status == CoverageStatus.UNSUPPORTED
@@ -1271,19 +2248,23 @@ else:
     ):
         st.info("当前工单已完成自动推进或已有足够证据，请查看“证据与报告”页的 Gate 与结论。")
 
-    top = st.columns(6)
+    top = st.columns(7)
     top[0].metric("Case", current.case_id)
     top[1].metric("覆盖", current.coverage_decision.status if current.coverage_decision else "N/A")
     top[2].metric("活动树", current.active_tree_id or "N/A")
     top[3].metric("当前节点", node_label(engine, current.active_node_id))
     top[4].metric("候选路径", len(current.candidate_paths))
     top[5].metric("Gate", current.gate_result.status if current.gate_result else "N/A")
+    top[6].metric("流程", enum_value(current.workflow_phase))
+    if current.workflow_notes:
+        st.caption("工作流状态：" + "；".join(current.workflow_notes[-3:]))
 
     tab_overview, tab_plan, tab_report, tab_replay, tab_eval = st.tabs(
         ["诊断概览", "当前节点 / HITL", "证据与报告", "Replay", "Eval"]
     )
 
     with tab_overview:
+        render_diagnostic_timeline(current)
         left, right = st.columns([1, 1])
         with left:
             st.subheader("工单与分类")
@@ -1327,7 +2308,8 @@ else:
             with st.expander("返修 / 前次误判风险", expanded=True):
                 st.metric("风险置信度", f"{current.rework_risk.confidence:.2f}")
                 st.json(current.rework_risk.model_dump(mode="json"))
-        render_dynamic_tree_request(current)
+        render_dynamic_tree_request(current, str(tree_proposals_dir))
+        render_tree_change_candidate(current, str(tree_proposals_dir))
 
     with tab_plan:
         left, right = st.columns([1, 1])
@@ -1344,6 +2326,9 @@ else:
                 render_action(engine, current, selected_action)
 
     with tab_report:
+        render_planner_gate_explanations(current)
+        render_evidence_explorer(current)
+
         st.subheader("已执行检测")
         if current.executed_tests:
             st.dataframe(
@@ -1354,30 +2339,35 @@ else:
         else:
             st.caption("暂无")
 
-        st.subheader("证据链")
-        if current.evidence_chain:
-            st.dataframe(
-                [item.model_dump(mode="json") for item in current.evidence_chain],
-                width="stretch",
-                hide_index=True,
-            )
-        else:
-            st.caption("暂无")
-
         if current.gate_result:
             st.subheader("Gate")
-            st.json(current.gate_result.model_dump(mode="json"))
+            gate = current.gate_result
+            gate_cols = st.columns(4)
+            gate_cols[0].metric("状态", enum_value(gate.status))
+            gate_cols[1].metric("阻塞项", len(gate.blocking_reasons))
+            gate_cols[2].metric("待补充", len(gate.required_actions))
+            gate_cols[3].metric("风险提示", len(gate.risk_notes))
+            if gate.blocking_reasons:
+                st.warning("阻塞：" + "；".join(gate.blocking_reasons))
+            if gate.required_actions:
+                st.info("待补充：" + "；".join(gate.required_actions))
+            if gate.risk_notes:
+                st.caption("风险提示：" + "；".join(gate.risk_notes))
+            with st.expander("Gate JSON", expanded=False):
+                st.json(gate.model_dump(mode="json"))
         if current.final_report:
             st.subheader("Markdown 报告")
             st.markdown(current.final_report.markdown)
             with st.expander("JSON 报告", expanded=False):
                 st.json(current.final_report.model_dump(mode="json"))
+        with st.expander("原始证据链 JSON", expanded=False):
+            st.json([item.model_dump(mode="json") for item in current.evidence_chain])
 
     with tab_replay:
         st.subheader("Replay Trace")
         st.caption("每次开始诊断或提交人工检测都会写入 runs/*.jsonl，并同步保存在当前 session。")
         st.json([record.model_dump(mode="json") for record in current.replay_trace])
-        render_dynamic_tree_cluster_history(str(runs_dir))
+        render_dynamic_tree_cluster_history(str(runs_dir), str(tree_proposals_dir))
 
     with tab_eval:
         render_eval_tab(engine, str(raw_docs_dir), str(datasets_dir))

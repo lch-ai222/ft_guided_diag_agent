@@ -36,6 +36,18 @@ class DiagnosisMode(StrEnum):
     CASE_ONLY_EXPLORATORY = "CASE_ONLY_EXPLORATORY"
 
 
+class DiagnosticWorkflowPhase(StrEnum):
+    INIT = "INIT"
+    CLASSIFIED = "CLASSIFIED"
+    RETRIEVING_CONTEXT = "RETRIEVING_CONTEXT"
+    PLANNING = "PLANNING"
+    WAITING_HITL = "WAITING_HITL"
+    GATE_PASS = "GATE_PASS"
+    GATE_GRAY = "GATE_GRAY"
+    GATE_FAIL = "GATE_FAIL"
+    REPORTED = "REPORTED"
+
+
 class ExecutorType(StrEnum):
     HUMAN = "HUMAN"
     AUTO_TOOL = "AUTO_TOOL"
@@ -58,6 +70,24 @@ class TreeProposalStatus(StrEnum):
     GRAY_TREE = "GRAY_TREE"
     RELEASED_TREE = "RELEASED_TREE"
     REJECTED = "REJECTED"
+
+
+class TreeProposalKind(StrEnum):
+    NEW_TREE = "NEW_TREE"
+    TREE_CHANGE = "TREE_CHANGE"
+
+
+class TreeChangeType(StrEnum):
+    ADD_BRANCH = "ADD_BRANCH"
+    REMOVE_BRANCH = "REMOVE_BRANCH"
+    UPDATE_TEST = "UPDATE_TEST"
+    UPDATE_THRESHOLD = "UPDATE_THRESHOLD"
+    UPDATE_TRANSITION_CONDITION = "UPDATE_TRANSITION_CONDITION"
+    UPDATE_EXECUTOR_TYPE = "UPDATE_EXECUTOR_TYPE"
+    UPDATE_SCOPE = "UPDATE_SCOPE"
+    MERGE_NODE = "MERGE_NODE"
+    SPLIT_NODE = "SPLIT_NODE"
+    DEPRECATE_TEST = "DEPRECATE_TEST"
 
 
 class TreeGenerationJobStatus(StrEnum):
@@ -87,6 +117,13 @@ class TreeGenerationQuality(StrEnum):
     HIGH_CONF_LLM_DRAFT = "HIGH_CONF_LLM_DRAFT"
     NEEDS_REPAIR_LLM_DRAFT = "NEEDS_REPAIR_LLM_DRAFT"
     LOW_CONF_DEBUG_DRAFT = "LOW_CONF_DEBUG_DRAFT"
+
+
+class CaseOnlyHypothesisStatus(StrEnum):
+    OPEN = "OPEN"
+    SUPPORTED = "SUPPORTED"
+    REFUTED = "REFUTED"
+    NEEDS_EVIDENCE = "NEEDS_EVIDENCE"
 
 
 class IntakeRequest(BaseModel):
@@ -275,7 +312,7 @@ class CaseOnlyHypothesis(BaseModel):
     supporting_evidence_ids: list[str] = Field(default_factory=list)
     contradicting_evidence_ids: list[str] = Field(default_factory=list)
     next_check_ids: list[str] = Field(default_factory=list)
-    status: str = "OPEN"
+    status: CaseOnlyHypothesisStatus = CaseOnlyHypothesisStatus.OPEN
 
 
 class ExploratoryDiagnosticPlan(BaseModel):
@@ -287,6 +324,9 @@ class ExploratoryDiagnosticPlan(BaseModel):
     next_action_ids: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
     risk_notes: list[str] = Field(default_factory=list)
+    iteration: int = 1
+    completed_action_ids: list[str] = Field(default_factory=list)
+    stopped_reason: str | None = None
 
 
 class ExploratoryFinding(BaseModel):
@@ -499,8 +539,17 @@ class TreeGenerationValidationReport(BaseModel):
 class TreeProposal(BaseModel):
     proposal_id: str = Field(default_factory=lambda: f"TP-{uuid4().hex[:8]}")
     status: TreeProposalStatus = TreeProposalStatus.DRAFT_TREE
+    proposal_kind: TreeProposalKind = TreeProposalKind.NEW_TREE
     source_type: str = "BATCH_DOCUMENTS"
     source_job_id: str | None = None
+    source_request_id: str | None = None
+    source_cluster_id: str | None = None
+    target_tree_id: str | None = None
+    target_tree_version: str | None = None
+    change_types: list[TreeChangeType] = Field(default_factory=list)
+    change_summary: str | None = None
+    change_patch: dict[str, Any] = Field(default_factory=dict)
+    drift_signals: list[str] = Field(default_factory=list)
     phenomenon_bucket: str
     candidate_start_symptom: str
     candidate_failure_domain: str | None = None
@@ -550,6 +599,173 @@ class TreeProposalReviewLog(BaseModel):
     decision: Literal["APPROVE", "REJECT", "REQUEST_CHANGES"]
     rationale: str
     required_changes: list[str] = Field(default_factory=list)
+    precheck_result: dict[str, Any] = Field(default_factory=dict)
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
+class TreeProposalPromotionPrecheck(BaseModel):
+    precheck_id: str = Field(default_factory=lambda: f"TPPC-{uuid4().hex[:8]}")
+    proposal_id: str
+    current_status: TreeProposalStatus
+    target_status: TreeProposalStatus | None = None
+    verdict: Literal["READY_FOR_REVIEW", "NEEDS_MORE_EVIDENCE", "BLOCKED", "NOT_APPLICABLE"]
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    satisfied: list[str] = Field(default_factory=list)
+    recommended_actions: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
+class TreeReleaseManifest(BaseModel):
+    manifest_id: str = Field(default_factory=lambda: f"TRM-{uuid4().hex[:8]}")
+    proposal_id: str
+    release_version: str
+    candidate_tree_id: str
+    source_status: TreeProposalStatus
+    candidate_start_symptom: str
+    applicable_scope: str = "PENDING_REVIEW"
+    source_eval_ids: list[str] = Field(default_factory=list)
+    source_eval_suites: list[str] = Field(default_factory=list)
+    source_review_ids: list[str] = Field(default_factory=list)
+    artifact_refs: list[str] = Field(default_factory=list)
+    safety_constraints: list[str] = Field(default_factory=list)
+    release_notes: list[str] = Field(default_factory=list)
+    generated_by: str | None = None
+    formal_signoff_reviewer: str | None = None
+    formal_signoff_rationale: str | None = None
+    formal_signoff_at: str | None = None
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
+class TreeRollbackMetadata(BaseModel):
+    rollback_id: str = Field(default_factory=lambda: f"TRB-{uuid4().hex[:8]}")
+    proposal_id: str
+    release_version: str
+    rollback_target: str = "previous_released_tree_registry_state"
+    rollback_triggers: list[str] = Field(default_factory=list)
+    rollback_steps: list[str] = Field(default_factory=list)
+    owner: str | None = None
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
+class TreeReleaseArtifact(BaseModel):
+    release_artifact_id: str = Field(default_factory=lambda: f"TRA-{uuid4().hex[:8]}")
+    proposal_id: str
+    manifest: TreeReleaseManifest
+    rollback: TreeRollbackMetadata
+    ttl_diff_md: str
+    generated_ttl_preview: str
+    source_eval_ids: list[str] = Field(default_factory=list)
+    source_eval_suites: list[str] = Field(default_factory=list)
+    source_review_ids: list[str] = Field(default_factory=list)
+    release_materials_ready: bool = False
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
+class TreeAdmissionMaterial(BaseModel):
+    material_id: str
+    stage: Literal["GRAY", "RELEASED"]
+    name: str
+    status: Literal["SATISFIED", "WARNING", "BLOCKED", "MISSING"]
+    source_type: str
+    source_id: str | None = None
+    source_path: str | None = None
+    detail: str
+    recommended_action: str | None = None
+
+
+class TreeAdmissionPackage(BaseModel):
+    package_id: str = Field(default_factory=lambda: f"TAP-{uuid4().hex[:8]}")
+    proposal_id: str
+    current_status: TreeProposalStatus
+    target_status: TreeProposalStatus
+    stage: Literal["GRAY", "RELEASED"]
+    ready_for_review: bool = False
+    materials: list[TreeAdmissionMaterial] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    satisfied: list[str] = Field(default_factory=list)
+    recommended_actions: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
+class ReleasedTreeRegistryEntry(BaseModel):
+    registry_entry_id: str = Field(default_factory=lambda: f"RTR-{uuid4().hex[:8]}")
+    proposal_id: str
+    release_artifact_id: str
+    release_version: str
+    candidate_tree_id: str
+    candidate_start_symptom: str
+    applicable_scope: str = "PENDING_REVIEW"
+    ttl_sha256: str
+    ttl_preview_path: str | None = None
+    production_ttl_path: str | None = None
+    source_eval_ids: list[str] = Field(default_factory=list)
+    source_review_ids: list[str] = Field(default_factory=list)
+    manifest_id: str
+    rollback_id: str
+    registry_status: Literal["READY_FOR_TTL_WRITE", "REGISTERED", "ROLLED_BACK"] = "READY_FOR_TTL_WRITE"
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
+class ProductionTtlAuditResult(BaseModel):
+    audit_id: str = Field(default_factory=lambda: f"PTA-{uuid4().hex[:8]}")
+    proposal_id: str
+    release_version: str | None = None
+    candidate_tree_id: str | None = None
+    verdict: Literal["READY_FOR_TTL_WRITE", "BLOCKED"]
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    registry_entry: ReleasedTreeRegistryEntry | None = None
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
+class ProductionTtlWritePlan(BaseModel):
+    plan_id: str = Field(default_factory=lambda: f"PTWP-{uuid4().hex[:8]}")
+    proposal_id: str
+    registry_entry_id: str
+    release_artifact_id: str
+    release_version: str
+    candidate_tree_id: str
+    production_ttl_path: str
+    backup_path: str
+    generated_ttl_sha256: str
+    current_ttl_sha256: str
+    operation: Literal["WRITE"]
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
+class ProductionTtlWriteResult(BaseModel):
+    write_id: str = Field(default_factory=lambda: f"PTW-{uuid4().hex[:8]}")
+    proposal_id: str
+    registry_entry_id: str | None = None
+    release_version: str | None = None
+    candidate_tree_id: str | None = None
+    verdict: Literal["REGISTERED", "BLOCKED"]
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    write_plan: ProductionTtlWritePlan | None = None
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
+class ProductionTtlRollbackResult(BaseModel):
+    rollback_run_id: str = Field(default_factory=lambda: f"PTR-{uuid4().hex[:8]}")
+    proposal_id: str
+    registry_entry_id: str | None = None
+    release_version: str | None = None
+    candidate_tree_id: str | None = None
+    verdict: Literal["ROLLBACK_READY", "ROLLED_BACK", "BLOCKED"]
+    dry_run: bool = True
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    restored_from_backup_path: str | None = None
     created_at: str = Field(default_factory=utc_now_iso)
 
 
@@ -684,6 +900,10 @@ class DiagnosticState(BaseModel):
     classification: WorkOrderClassification | None = None
     coverage_decision: CoverageDecision | None = None
     diagnosis_mode: DiagnosisMode = DiagnosisMode.PRODUCTION
+    workflow_phase: DiagnosticWorkflowPhase = DiagnosticWorkflowPhase.INIT
+    waiting_for_human: bool = False
+    waiting_action_ids: list[str] = Field(default_factory=list)
+    workflow_notes: list[str] = Field(default_factory=list)
     active_tree_id: str | None = None
     active_node_id: str | None = None
     intake_request: IntakeRequest | None = None
@@ -706,6 +926,7 @@ class DiagnosticState(BaseModel):
     case_only_findings: list[ExploratoryFinding] = Field(default_factory=list)
     fault_tree_generation_request: FaultTreeGenerationRequest | None = None
     fault_tree_request_cluster: FaultTreeRequestCluster | None = None
+    tree_change_proposal: TreeProposal | None = None
     created_at: str = Field(default_factory=utc_now_iso)
     updated_at: str = Field(default_factory=utc_now_iso)
 

@@ -15,6 +15,7 @@ from ft_diag_agent.models import (
     GateStatus,
     ReplayRecord,
     WorkOrder,
+    utc_now_iso,
 )
 from ft_diag_agent.rag import DocumentRag
 from ft_diag_agent.settings import Settings
@@ -84,6 +85,7 @@ class EvalCaseResult(BaseModel):
     case_only_hypotheses: list[dict[str, Any]] = Field(default_factory=list)
     rework_risk: dict[str, Any] | None = None
     risk_notes: list[str] = Field(default_factory=list)
+    replay_trace: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class EvalSuiteSummary(BaseModel):
@@ -105,6 +107,55 @@ class EvalSuiteSummary(BaseModel):
     wrong_tree_misdiagnosis_count: int = 0
     group_metrics: dict[str, dict[str, Any]] = Field(default_factory=dict)
     results: list[EvalCaseResult] = Field(default_factory=list)
+
+
+class EvalRunMetadata(BaseModel):
+    run_id: str
+    suite: str
+    created_at: str = Field(default_factory=utc_now_iso)
+    cases: int = 0
+    config: dict[str, Any] = Field(default_factory=dict)
+    notes: list[str] = Field(default_factory=list)
+
+
+class EvalConfusionRow(BaseModel):
+    dimension: Literal["tree", "node", "test"]
+    expected: str
+    predicted: str
+    count: int
+    case_ids: list[str] = Field(default_factory=list)
+    failure_tags: list[str] = Field(default_factory=list)
+
+
+class EvalConfusionReport(BaseModel):
+    tree: list[EvalConfusionRow] = Field(default_factory=list)
+    node: list[EvalConfusionRow] = Field(default_factory=list)
+    test: list[EvalConfusionRow] = Field(default_factory=list)
+
+
+class EvalMetricDelta(BaseModel):
+    metric: str
+    baseline: float | int | None = None
+    current: float | int | None = None
+    delta: float | int | None = None
+    status: Literal["IMPROVED", "REGRESSED", "STABLE", "INFO"] = "INFO"
+    affected_case_ids: list[str] = Field(default_factory=list)
+
+
+class EvalRunComparison(BaseModel):
+    baseline_run_id: str
+    current_run_id: str
+    metric_deltas: list[EvalMetricDelta] = Field(default_factory=list)
+    regressions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    newly_failed_cases: list[str] = Field(default_factory=list)
+    resolved_failed_cases: list[str] = Field(default_factory=list)
+
+
+class EvalRunArtifact(BaseModel):
+    metadata: EvalRunMetadata
+    summary: EvalSuiteSummary
+    confusion: EvalConfusionReport
 
 
 POWERTRAIN_UNSUPPORTED_CASE = """## 工单 01｜MOCK-NFT-01-01｜车辆加速无力/动力受限
@@ -137,6 +188,43 @@ P1A0B-VCU 扭矩降额；BMS 单体压差瞬时升高
 """
 
 LABELED_EVAL_V1_PATH = Path("data/raw_docs/diagnostic_eval_labeled_cases_v1/diagnostic_eval_cases_v1.jsonl")
+EVAL_TREND_METRICS = [
+    "coverage_accuracy",
+    "route_accuracy",
+    "tree_selection_accuracy",
+    "final_leaf_accuracy",
+    "gate_accuracy",
+    "production_gate_safety_rate",
+    "case_only_hypothesis_hit_rate",
+    "next_action_hit_rate",
+    "reject_accuracy",
+    "rework_or_misdiagnosis_identification_rate",
+    "gate_mispass_count",
+    "guardrail_misroute_count",
+    "wrong_tree_misdiagnosis_count",
+]
+EVAL_LOWER_IS_BETTER = {
+    "gate_mispass_count",
+    "guardrail_misroute_count",
+    "wrong_tree_misdiagnosis_count",
+}
+EVAL_CRITICAL_REGRESSION_METRICS = {
+    "production_gate_safety_rate",
+    "gate_mispass_count",
+    "wrong_tree_misdiagnosis_count",
+}
+EVAL_METRIC_FIELDS = {
+    "coverage_accuracy": "coverage_correct",
+    "route_accuracy": "route_correct",
+    "tree_selection_accuracy": "tree_correct",
+    "final_leaf_accuracy": "leaf_correct",
+    "gate_accuracy": "gate_correct",
+    "production_gate_safety_rate": "production_gate_safe",
+    "case_only_hypothesis_hit_rate": "hypothesis_hit",
+    "next_action_hit_rate": "next_action_hit",
+    "reject_accuracy": "reject_correct",
+    "rework_or_misdiagnosis_identification_rate": "rework_or_misdiagnosis_identified",
+}
 
 
 def load_replay_records(runs_dir: str | Path) -> list[ReplayRecord]:
@@ -396,11 +484,159 @@ def write_eval_outputs(summary: EvalSuiteSummary, output_dir: str | Path) -> dic
     }
 
 
+def write_eval_run(
+    summary: EvalSuiteSummary,
+    eval_runs_dir: str | Path,
+    suite: str,
+    *,
+    run_id: str | None = None,
+    config: dict[str, Any] | None = None,
+    notes: list[str] | None = None,
+) -> EvalRunArtifact:
+    metadata = EvalRunMetadata(
+        run_id=run_id or _default_eval_run_id(suite),
+        suite=suite,
+        cases=summary.cases,
+        config=config or {},
+        notes=notes or [],
+    )
+    artifact = EvalRunArtifact(
+        metadata=metadata,
+        summary=summary,
+        confusion=build_eval_confusion(summary.results),
+    )
+    run_dir = Path(eval_runs_dir) / metadata.run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    summary_without_rows = summary.model_copy(update={"results": []})
+    (run_dir / "run_metadata.json").write_text(
+        json.dumps(metadata.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (run_dir / "summary.json").write_text(
+        json.dumps(summary_without_rows.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    _write_jsonl(run_dir / "results.jsonl", [result.model_dump(mode="json") for result in summary.results])
+    _write_jsonl(run_dir / "details.jsonl", [_eval_detail_row(result) for result in summary.results])
+    confusion = artifact.confusion
+    (run_dir / "confusion_tree.json").write_text(
+        json.dumps([item.model_dump(mode="json") for item in confusion.tree], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (run_dir / "confusion_node.json").write_text(
+        json.dumps([item.model_dump(mode="json") for item in confusion.node], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (run_dir / "confusion_test.json").write_text(
+        json.dumps([item.model_dump(mode="json") for item in confusion.test], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return artifact
+
+
+def list_eval_runs(eval_runs_dir: str | Path) -> list[EvalRunMetadata]:
+    root = Path(eval_runs_dir)
+    if not root.exists():
+        return []
+    runs: list[EvalRunMetadata] = []
+    for metadata_path in sorted(root.glob("*/run_metadata.json")):
+        try:
+            runs.append(EvalRunMetadata.model_validate(json.loads(metadata_path.read_text(encoding="utf-8"))))
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return sorted(runs, key=lambda item: item.created_at, reverse=True)
+
+
+def load_eval_run(eval_runs_dir: str | Path, run_id: str) -> EvalRunArtifact:
+    run_dir = Path(eval_runs_dir) / run_id
+    metadata = EvalRunMetadata.model_validate(
+        json.loads((run_dir / "run_metadata.json").read_text(encoding="utf-8"))
+    )
+    summary = EvalSuiteSummary.model_validate(json.loads((run_dir / "summary.json").read_text(encoding="utf-8")))
+    results = _read_jsonl(run_dir / "results.jsonl")
+    summary.results = [EvalCaseResult.model_validate(item) for item in results]
+    confusion = EvalConfusionReport(
+        tree=[
+            EvalConfusionRow.model_validate(item)
+            for item in _read_json_array(run_dir / "confusion_tree.json")
+        ],
+        node=[
+            EvalConfusionRow.model_validate(item)
+            for item in _read_json_array(run_dir / "confusion_node.json")
+        ],
+        test=[
+            EvalConfusionRow.model_validate(item)
+            for item in _read_json_array(run_dir / "confusion_test.json")
+        ],
+    )
+    return EvalRunArtifact(metadata=metadata, summary=summary, confusion=confusion)
+
+
+def build_eval_confusion(results: list[EvalCaseResult]) -> EvalConfusionReport:
+    return EvalConfusionReport(
+        tree=_confusion_rows(
+            "tree",
+            [(_label(result.expected_tree_id), _label(result.tree_id), result) for result in results],
+        ),
+        node=_confusion_rows(
+            "node",
+            [
+                (
+                    _label(result.expected_leaf_symptom_id),
+                    _label(result.active_node_id),
+                    result,
+                )
+                for result in results
+            ],
+        ),
+        test=_confusion_rows(
+            "test",
+            [
+                (
+                    _expected_test_label(result),
+                    _planned_test_label(result.planned_actions),
+                    result,
+                )
+                for result in results
+            ],
+        ),
+    )
+
+
+def compare_eval_runs(baseline: EvalRunArtifact, current: EvalRunArtifact) -> EvalRunComparison:
+    baseline_failed = {item.case_id for item in baseline.summary.results if item.failure_tags}
+    current_failed = {item.case_id for item in current.summary.results if item.failure_tags}
+    metric_deltas = [
+        _metric_delta(metric, baseline.summary, current.summary, baseline.summary.results, current.summary.results)
+        for metric in EVAL_TREND_METRICS
+    ]
+    regressions: list[str] = []
+    warnings: list[str] = []
+    for item in metric_deltas:
+        if item.status != "REGRESSED":
+            continue
+        message = f"{item.metric}: {item.baseline} -> {item.current}"
+        if item.metric in EVAL_CRITICAL_REGRESSION_METRICS:
+            regressions.append(message)
+        else:
+            warnings.append(message)
+    return EvalRunComparison(
+        baseline_run_id=baseline.metadata.run_id,
+        current_run_id=current.metadata.run_id,
+        metric_deltas=metric_deltas,
+        regressions=regressions,
+        warnings=warnings,
+        newly_failed_cases=sorted(current_failed - baseline_failed),
+        resolved_failed_cases=sorted(baseline_failed - current_failed),
+    )
+
+
 def run_diagnostic_eval(
     engine: DiagnosticEngine,
     cases_path: str | Path | None = None,
     output_dir: str | Path | None = None,
     suite: str = "default",
+    eval_runs_dir: str | Path | None = None,
 ) -> EvalSuiteSummary:
     if cases_path:
         cases = load_eval_cases(cases_path)
@@ -411,6 +647,16 @@ def run_diagnostic_eval(
     summary = run_eval_cases(engine, cases)
     if output_dir:
         write_eval_outputs(summary, output_dir)
+    if eval_runs_dir:
+        write_eval_run(
+            summary,
+            eval_runs_dir,
+            suite,
+            config={
+                "cases_path": str(cases_path) if cases_path else None,
+                "output_dir": str(output_dir) if output_dir else None,
+            },
+        )
     return summary
 
 
@@ -561,6 +807,7 @@ def _run_eval_case(engine: DiagnosticEngine, case: EvalCase) -> EvalCaseResult:
         case_only_hypotheses=hypotheses,
         rework_risk=state.rework_risk.model_dump(mode="json") if state.rework_risk else None,
         risk_notes=state.gate_result.risk_notes if state.gate_result else [],
+        replay_trace=[record.model_dump(mode="json") for record in state.replay_trace],
     )
 
 
@@ -586,6 +833,7 @@ def _eval_detail_row(result: EvalCaseResult) -> dict[str, Any]:
         "gate_mispass": result.gate_mispass,
         "guardrail_misroute": result.guardrail_misroute,
         "wrong_tree_misdiagnosis": result.wrong_tree_misdiagnosis,
+        "replay_trace": result.replay_trace,
     }
 
 
@@ -640,6 +888,146 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> int:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     return len(rows)
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                rows.append(json.loads(line))
+    return rows
+
+
+def _read_json_array(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return payload if isinstance(payload, list) else []
+
+
+def _default_eval_run_id(suite: str) -> str:
+    stamp = utc_now_iso().replace(":", "").replace("+", "Z").replace(".", "-")
+    safe_suite = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in suite)
+    return f"{stamp}_{safe_suite}"
+
+
+def _confusion_rows(
+    dimension: Literal["tree", "node", "test"],
+    pairs: list[tuple[str, str, EvalCaseResult]],
+) -> list[EvalConfusionRow]:
+    buckets: dict[tuple[str, str], dict[str, Any]] = {}
+    for expected, predicted, result in pairs:
+        key = (expected, predicted)
+        bucket = buckets.setdefault(key, {"case_ids": [], "failure_tags": set()})
+        bucket["case_ids"].append(result.case_id)
+        bucket["failure_tags"].update(result.failure_tags)
+    rows = [
+        EvalConfusionRow(
+            dimension=dimension,
+            expected=expected,
+            predicted=predicted,
+            count=len(payload["case_ids"]),
+            case_ids=payload["case_ids"],
+            failure_tags=sorted(payload["failure_tags"]),
+        )
+        for (expected, predicted), payload in buckets.items()
+    ]
+    return sorted(rows, key=lambda item: (-item.count, item.expected, item.predicted))
+
+
+def _metric_delta(
+    metric: str,
+    baseline: EvalSuiteSummary,
+    current: EvalSuiteSummary,
+    baseline_results: list[EvalCaseResult],
+    current_results: list[EvalCaseResult],
+) -> EvalMetricDelta:
+    baseline_value = getattr(baseline, metric)
+    current_value = getattr(current, metric)
+    delta = _delta_value(baseline_value, current_value)
+    status = _delta_status(metric, delta)
+    return EvalMetricDelta(
+        metric=metric,
+        baseline=baseline_value,
+        current=current_value,
+        delta=delta,
+        status=status,
+        affected_case_ids=_affected_cases_for_metric(metric, baseline_results, current_results),
+    )
+
+
+def _delta_value(
+    baseline: float | int | None,
+    current: float | int | None,
+) -> float | int | None:
+    if baseline is None or current is None:
+        return None
+    value = current - baseline
+    return round(value, 4) if isinstance(value, float) else value
+
+
+def _delta_status(metric: str, delta: float | int | None) -> Literal["IMPROVED", "REGRESSED", "STABLE", "INFO"]:
+    if delta is None:
+        return "INFO"
+    if delta == 0:
+        return "STABLE"
+    lower_is_better = metric in EVAL_LOWER_IS_BETTER
+    if lower_is_better:
+        return "IMPROVED" if delta < 0 else "REGRESSED"
+    return "IMPROVED" if delta > 0 else "REGRESSED"
+
+
+def _affected_cases_for_metric(
+    metric: str,
+    baseline_results: list[EvalCaseResult],
+    current_results: list[EvalCaseResult],
+) -> list[str]:
+    current_by_case = {item.case_id: item for item in current_results}
+    baseline_by_case = {item.case_id: item for item in baseline_results}
+    if metric in {"gate_mispass_count", "wrong_tree_misdiagnosis_count", "guardrail_misroute_count"}:
+        flag = {
+            "gate_mispass_count": "gate_mispass",
+            "wrong_tree_misdiagnosis_count": "wrong_tree_misdiagnosis",
+            "guardrail_misroute_count": "guardrail_misroute",
+        }[metric]
+        return sorted(case_id for case_id, item in current_by_case.items() if getattr(item, flag))
+    field = EVAL_METRIC_FIELDS.get(metric)
+    if not field:
+        return []
+    affected: list[str] = []
+    for case_id, current in current_by_case.items():
+        current_value = getattr(current, field)
+        baseline_value = getattr(baseline_by_case.get(case_id), field, None)
+        if current_value is False and baseline_value is not False:
+            affected.append(case_id)
+    return sorted(affected)
+
+
+def _label(value: Any) -> str:
+    if value is None:
+        return "NONE"
+    text = str(getattr(value, "value", value)).strip()
+    return text or "NONE"
+
+
+def _expected_test_label(result: EvalCaseResult) -> str:
+    if result.expected_next_action_hit_text:
+        return result.expected_next_action_hit_text
+    if result.expected_action_keywords:
+        return " / ".join(result.expected_action_keywords)
+    return "UNSCORED"
+
+
+def _planned_test_label(planned_actions: list[dict[str, Any]]) -> str:
+    labels: list[str] = []
+    for action in planned_actions:
+        label = action.get("test_id") or action.get("action_type") or action.get("action_id")
+        if label and label not in labels:
+            labels.append(str(label))
+    return " / ".join(labels[:6]) if labels else "NONE"
 
 
 def _predicted_route(
@@ -954,6 +1342,7 @@ def main() -> None:
     parser.add_argument("--eval-suite", choices=["default", "labeled_v1"], default="default")
     parser.add_argument("--eval-cases", default=None)
     parser.add_argument("--eval-output-dir", default="datasets/eval_results")
+    parser.add_argument("--eval-runs-dir", default=None)
     parser.add_argument("--ttl-path", default="corrected_fault_tree_instances.ttl")
     parser.add_argument("--raw-docs-dir", default="data/raw_docs")
     parser.add_argument("--chroma-dir", default="data/chroma")
@@ -975,7 +1364,13 @@ def main() -> None:
             DocumentRag(settings.raw_docs_dir, settings.chroma_dir),
             settings,
         )
-        summary = run_diagnostic_eval(engine, args.eval_cases, args.eval_output_dir, args.eval_suite)
+        summary = run_diagnostic_eval(
+            engine,
+            args.eval_cases,
+            args.eval_output_dir,
+            args.eval_suite,
+            args.eval_runs_dir,
+        )
         print(json.dumps(summary.model_dump(mode="json", exclude={"results"}), ensure_ascii=False, indent=2))
         return
     summary = export_datasets(load_replay_records(args.runs_dir), args.datasets_dir)

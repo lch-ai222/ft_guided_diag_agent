@@ -1,6 +1,6 @@
 # PROJECT_STATE.md
 
-更新时间：2026-06-01
+更新时间：2026-06-08
 
 本文件记录当前项目实现状态。新会话或其他智能体应先读 `AGENTS.md`，再读本文件，最后读 `TASKS.md`。
 
@@ -17,6 +17,13 @@
   - 生产态输出不支持并阻断 PASS。
   - 开发态进入 case-only 探索诊断，并沉淀动态故障树候选请求/聚类。
 - 新目标：把无树 case-only 诊断改造为 TreeProposal 发现、临时诊断、评测、人工审核、灰度和 Released Tree 发布链路。
+- 当前已支持两类 TreeProposal 发现入口：批量文档 Tree Generation，以及开发态 case-only request / 跨 runs cluster 写入 DRAFT_TREE。
+- TreeProposal 审核页已支持确定性晋升预审；预审只输出阻塞/警告/建议并写入审核日志，不自动晋升。
+- TreeProposal 审核页已支持人类可读的 proposed tree 审核视图：有 `TreeGenerationArtifact` 时展示真实 L1/L2/L3 树图、节点状态和 transition/test；无 artifact 时展示 `DISCOVERY_ONLY` skeleton 并明确阻塞。
+- TreeProposal 审核页已支持从“来源输入”到“生产 TTL 发布”的 8 步流程状态条，绿色表示完成、蓝色表示当前、红色表示阻塞、灰色表示未开始。
+- Tree Generation Extraction Eval 第一版已支持 `tree_generation_extraction_v1`：结构评分、字段完整率、原文事实召回、grounding、幻觉率、链路逻辑、test 可执行性、反证和重复率；批量生成后自动写入 eval result，DRAFT 晋升预审会消费该结果。
+- Tree Evolution 已扩展为双轨：`NEW_TREE` 用于无树覆盖新增树，`TREE_CHANGE` 用于已有树的检测项、阈值、transition condition、executor、scope 或分支变化。covered 诊断中出现工艺漂移/反证/返修信号时可生成 `tree_change_proposal`，但不改变 Gate、不写 TTL。
+- Streamlit 已拆分为 sidebar 页面：`诊断工作台` 保留工单诊断和诊断中发现无树的第二入口；`树生成工作台` 承载批量文档树生成、树生成 HITL 补全和 TreeProposal 审核。
 - 所有故障树 test 当前均按人工 HITL 录入。
 - Gate 决定 `PASS / GRAY / FAIL`。
 - 生成 Markdown + JSON 报告。
@@ -42,6 +49,8 @@
 - 当前代码已在 draft entity properties 中标记 `needs_generation_hitl` / `hitl_reasons`，并能从 `TreeGenerationArtifact` 生成 HITL 补全候选列表；UI 可基于原文 chunk、RAG 和领域/工艺/维修专家约束生成建议选项，用户确认后写回草稿字段为 `CONFIRMED` 并重跑校验/预览。
 - 批量树生成已拆为 `PASS_1` 候选抽取、`PASS_2` 实体分级、`PASS_3` transition 绑定、结构校验、`PASS_4` 修复和确定性 BFS 重建；`PASS_4` 不允许因 `EXTRACTED_INFERRED` / `MISSING` 低置信而删除待确认内容。
 - Tree Generation UI 已增加运行阶段状态流、阶段耗时统计、Mermaid 树结构图和当前 LLM 配置提示；生成完成后默认选中新 job，历史任务列表按更新时间倒序，避免旧 job 的 LLM 失败信息误导为本次结果。
+- Tree Generation HITL 补全候选写回后不再修改已实例化的 `tree_generation_job_select` widget key，避免 Streamlit `session_state` 异常；更新同一 job 后只刷新 `last_tree_generation_job_id` 并 rerun。
+- Tree Generation HITL 确认写回后会剪除已解决的建议卡片，并显示待补全字段数量变化，避免用户无法判断是否生效。
 
 ## 2. 当前技术栈
 
@@ -324,9 +333,11 @@ RAG 对 labeled eval 数据做了标签脱敏，避免把 `expected_*`、真实�
 
 case-only Planner 当前逻辑：
 
-- 基于历史工单/RAG/LLM/规则生成假设。
+- 基于历史工单/RAG/LLM/规则生成初始假设。
 - 输出探索目标、假设列表、下一步 HITL 检查。
 - 提交人工结果后生成 `ExploratoryFinding`。
+- 已实现多轮探索循环：根据检查结果更新假设状态 `OPEN / SUPPORTED / REFUTED / NEEDS_EVIDENCE`，抑制已执行检查，并围绕仍需证据的假设生成下一轮 `CASE_ONLY_HITL` 动作。
+- 不会在新工单输入时直接生成可诊断的新树；case-only 先探索取证，`FaultTreeGenerationRequest` / `TreeProposal` 只是后续树生成和审核输入。
 - 开发态不能生产 PASS。
 
 动态故障树候选请求当前逻辑：
@@ -335,6 +346,7 @@ case-only Planner 当前逻辑：
 - 只在 `UNSUPPORTED + CASE_ONLY_EXPLORATORY` 且已有 case-only 假设/计划/发现时生成。
 - 输出 `DiagnosticState.fault_tree_generation_request` 和 `DiagnosticState.fault_tree_request_cluster`。
 - 候选请求包含来源工单、候选入口现象、候选故障域、候选根因假设、建议检查项、证据 ID、来源引用、本体建模约束和校验步骤。
+- 已被 case-only 循环 `REFUTED` 的假设不会进入候选 root cause family，只作为探索发现/反证证据保留。
 - 聚类对象包含 cluster key、支持案例、合并假设、合并检查、审核状态建议和下一步建议。
 - Replay 导出会跨 `runs/*.jsonl` 合并相似动态树请求，生成 `datasets/dynamic_tree_clusters.jsonl`。
 - Streamlit Replay 页可以手动扫描 `runs/` 并查看动态树候选聚类历史。
@@ -394,8 +406,33 @@ Tree Evolution 新规划：
   - 树生成 HITL 已支持 `TreeGenerationHitlSuggestion` / `TreeGenerationHitlDecision`：LLM 仅提供基于原文 + RAG + 专家知识的建议选项，人工确认后才写回草稿 artifact，并将字段推进到 `CONFIRMED`。
   - `src/ft_diag_agent/tree_proposals.py` 已实现本地文件型 `TreeProposalStore`，统一读写 proposals、case links、eval results、review logs 和 artifact 快照；Streamlit 已有 TreeProposal 审核页，第一阶段只允许 `DRAFT_TREE -> CANDIDATE_TREE`、请求修改或拒绝。
   - `src/ft_diag_agent/tree_proposal_eval.py` 已实现 Tree Proposal Eval 第一版确定性指标：结构校验、test coverage、evidence binding、HITL confirmed/pending 和 unsafe blockers，并写入 `eval_results.jsonl`。
+  - `src/ft_diag_agent/tree_proposal_eval.py` 已实现 replay-based shadow eval 第一版：读取 `runs/*.jsonl` 或传入 replay records，按 proposal 的 start/root/test/evidence 信号匹配历史 replay，输出相关 case 数、root/test 支持率、证据命中率、失败案例和 unsafe findings；该能力只作为 `CANDIDATE_TREE -> GRAY_TREE` 离线审核材料，不写 TTL、不影响生产 Gate。
+  - `src/ft_diag_agent/tree_release.py` 已实现 release manifest / rollback metadata / TTL diff 发布前材料包第一版：从 `GRAY_TREE` proposal、artifact、eval results 和 review logs 生成 `manifest.json`、`rollback_metadata.json`、`ttl_diff.md` 和 `release_artifact.json`，保存到 `data/tree_proposals/artifacts/{proposal_id}/release/`；发布材料必须消费 `tree_generation_extraction_v1`、结构 eval、shadow eval、Gray 审核日志和正式签核。
+  - `src/ft_diag_agent/tree_admission.py` 已实现 GRAY / RELEASED 准入材料包第一版：把 artifact、case/evidence、抽取质量 eval、结构 eval、shadow eval、候选审核、release artifact、manifest、rollback、TTL diff、Gray 审核和正式签核整理成逐项材料状态、阻塞项、警告项和建议动作。
+  - `src/ft_diag_agent/released_tree_registry.py` 已实现 Released Tree registry / 生产 TTL 写入审计和受控执行第一版：只允许 `RELEASED_TREE` proposal 在 release artifact ready、正式签核、rollback、`tree_generation_extraction_v1`、runtime-compatible TTL preview、tree_id 唯一性和生产 TTL 重复检查通过后，写入 `data/released_trees/registry.jsonl` 的 `READY_FOR_TTL_WRITE` 记录；写入动作必须消费 READY 记录，生成备份后追加 TTL，成功后标记 `REGISTERED`；rollback dry-run 验证备份可恢复，正式 rollback 恢复 TTL 并标记 `ROLLED_BACK`。审计历史写入 `ttl_audit_results.jsonl`、`ttl_write_results.jsonl` 和 `ttl_rollback_results.jsonl`。
+  - `src/ft_diag_agent/tree_proposal_precheck.py` 已实现 TreeProposal 晋升预审：`DRAFT_TREE -> CANDIDATE_TREE` 检查 start/root/test、source case、evidence、artifact、Tree Proposal Eval unsafe findings、support case count 和 evidence binding rate；`CANDIDATE_TREE -> GRAY_TREE` 和 `GRAY_TREE -> RELEASED_TREE` 预审会消费同一套 admission package，避免审核 UI 与阻塞规则漂移。
+  - `src/ft_diag_agent/tree_generation_eval.py` 已实现 Tree Generation Extraction Eval 第一版：输出 `tree_generation_extraction_v1`，评估 ontology 结构、字段完整率、原文事实召回、grounding、幻觉率、链路逻辑、test 可执行性、反证和重复率；DRAFT 晋升预审要求该 eval 已运行。
+  - `src/ft_diag_agent/tree_proposal_analytics.py` 已实现跨 proposal 聚合预审第一版：按 phenomenon bucket 汇总同类 proposal、root cause family、repeated test、人工确认有效率和高风险反证；聚合结论只追加 blocker/warning/satisfied/recommended action，不自动晋升、不写 TTL、不影响 Gate。
+  - `src/ft_diag_agent/tree_proposal_view.py` 已实现 TreeProposal 审核视图辅助：8 步生命周期状态、artifact 树节点/transition 表和无 artifact 时的 proposal skeleton Mermaid；Replay/Shadow 步骤会显示 shadow eval 是否完成或阻塞。
+  - `TreeProposal` 已支持 `proposal_kind=NEW_TREE/TREE_CHANGE`；`DiagnosticState.tree_change_proposal` 可记录 covered case 中发现的已有树变更候选，`TreeProposalStore.upsert_tree_change_proposal()` 可写入本地 store。
 - 规则抽取仅作为 LLM 不可用/失败时的 `LOW_CONF_DEBUG_DRAFT` 调试兜底，不作为高质量可用树。
-- 当前不写正式 TTL，不接生产分类，不允许 Gate PASS。
+- 当前已支持受控写入正式 TTL 文件和手动 rollback 演练，但不自动接生产分类、不允许未发布树 Gate PASS；发布后监控、自动回滚触发和服务化 registry 尚未完成。
+
+Tree Generation 第二入口当前逻辑：
+
+- 文件：`src/ft_diag_agent/tree_proposals.py`
+- UI：`app/streamlit_app.py` 中“动态故障树候选请求”和“跨 runs 动态故障树聚类”。
+- TreeProposal 审核 UI 已增加“跨 Proposal 聚合”tab，展示同类现象 bucket、root cause family、重复 test、人工确认率和高风险反证。
+- 输入：
+  - 开发态 unsupported case-only 诊断生成的 `FaultTreeGenerationRequest`。
+  - 从 `runs/*.jsonl` 扫描合并出的 `FaultTreeRequestCluster`。
+- 输出：
+  - `TreeProposal(status=DRAFT_TREE, source_type=WORK_ORDER_TRIGGER)`。
+  - `TreeProposal(status=DRAFT_TREE, source_type=DYNAMIC_CLUSTER)`。
+  - `TreeProposalCaseLink`，记录 source case、work order、候选 root cause family、candidate tests 和人工确认占位。
+  - `data/tree_proposals/artifacts/{proposal_id}/proposal.json` 快照。
+- 重复写入使用稳定 proposal id，只更新同一 proposal 和 case link，不产生重复 proposal。
+- 第二入口不调用 LLM，不写正式 TTL，不影响生产 Gate，只把开发态探索结果沉淀为可审核 proposal。
 
 ReworkGuard 当前逻辑：
 
@@ -487,6 +524,10 @@ ReworkGuard 当前逻辑：
 - 每次诊断写入 replay。
 - 可导出 planner/report/preference 数据。
 - labeled v1 eval。
+- 版本化 eval run：`datasets/eval_runs/{run_id}/` 保存 metadata、summary、results、details 和树/节点/test 混淆文件。
+- Streamlit Eval 页支持 baseline/current 历史 run 对比、指标 delta、关键回归/普通 warning、新增失败和已修复 case。
+- Streamlit Eval 页支持树、节点和 test 维度混淆分析。
+- 失败 case drill-down 已能展示 replay 回放摘要和 replay JSON。
 - 指标包括：
   - coverage accuracy
   - route accuracy
@@ -504,8 +545,8 @@ ReworkGuard 当前逻辑：
 
 当前边界：
 
-- Eval 已支持离线脚本、结果导出和 Streamlit 失败案例 drill-down。
-- 仍缺少多版本趋势对比、按节点/test/树的混淆分析和 replay 回放可视化。
+- Eval 已支持离线脚本、结果导出、版本化 run、Streamlit 失败案例 drill-down、多版本对比、树/节点/test 混淆分析和 replay 摘要联动。
+- 仍缺少多个 run 的趋势图、图节点级 replay 事件流和自动根因归因报告。
 - SFT/LoRA/QLoRA/DPO 目前是数据准备能力，不默认训练。
 
 ### 4.12 Streamlit UI
@@ -525,6 +566,9 @@ ReworkGuard 当前逻辑：
 - Planner 动作选择。
 - 人工检测录入。
 - case-only 探索计划与假设展示。
+- 诊断时间线：工单输入、分类/覆盖、路径或探索计划、Planner 检查动作、人工结果与证据、Gate、报告/Replay。
+- Planner / Evidence / Gate 因果解释：把规划原因、证据状态和 Gate 影响放在同一表中展示。
+- 证据摘要：按来源、支持对象、强度和解释展示，原始证据 JSON 折叠作为审计材料。
 - 返修/误判风险展示。
 - Gate 展示。
 - 报告展示。
@@ -538,29 +582,29 @@ ReworkGuard 当前逻辑：
 
 当前问题：
 
-- UI 仍偏工程工作台，不是最终生产级体验。
-- 复杂诊断链路的可视化还不够强。
-- 反证检查、case-only 探索、普通 test 的关系需要更清晰的时间线展示。
+- 生产级视觉 polish、角色化审核视图和移动端体验仍待优化。
+- replay 仍主要是 JSON 审计视图，缺少事件级回放和版本对比。
+- 反证检查、case-only 探索、普通 test 已能通过时间线和因果解释区分，但后续可继续增加专业角色视角的过滤器。
 
 ## 5. 最近一次验证结果
 
-最近一次代码验证时间：2026-06-02，完成 TreeProposalStore、基础审核 UI、review log、artifact snapshot 和 Tree Proposal Eval 第一版接入后。
+最近一次代码验证时间：2026-06-08，完成受控生产 TTL 写入执行、rollback 演练、`tree_generation_extraction_v1` 发布门禁和文档同步后。
 
 命令：
 
 ```bash
 .venv/bin/ruff check .
 .venv/bin/python -m pytest -q
-.venv/bin/python -m compileall src app tests scripts
+.venv/bin/python -m compileall src app tests
+.venv/bin/python -m ft_diag_agent.eval --diagnostic-eval --eval-suite labeled_v1 --eval-output-dir datasets/eval_results_labeled_v1 --eval-runs-dir datasets/eval_runs
 ```
 
 结果：
 
 - ruff：通过。
-- pytest：`50 passed`。
+- pytest：`105 passed`。
 - compileall：通过。
-
-最近一次 labeled v1 eval 结果仍为 2026-05-28 记录，当前 Tree Generation 改造未重新运行 labeled v1。
+- labeled v1 eval：通过，`gate_mispass_count=0`，`wrong_tree_misdiagnosis_count=0`。
 
 核心评测指标：
 
@@ -651,12 +695,18 @@ kill <PID>
 - `plan_case_only` 条件边：
   - 预留自动工具动作 -> `execute_auto_actions`
   - 当前 HITL 策略 -> `gate`
+- `gate` 条件边：
+  - 存在 blocking human_input 动作 -> `wait_hitl`
+  - `PASS` -> `gate_pass`
+  - `GRAY` -> `gate_gray`
+  - `FAIL` -> `gate_fail`
+- `DiagnosticState.workflow_phase` 已记录 `WAITING_HITL / GATE_PASS / GATE_GRAY / GATE_FAIL` 等阶段；`waiting_for_human` 和 `waiting_action_ids` 显式表达是否等待人工。
 - 非 LangGraph fallback 已同步同样的 unsupported 路由语义。
 
 仍未完成：
 
-- 缺少条件循环。
 - 自动工具执行节点仍是占位，尚未接真实 SPC/BOM/曲线判异。
+- replay 记录仍是整段 state snapshot，尚未拆成更细粒度图事件。
 - 缺少多 agent 协作。
 - 缺少动态计划修订节点。
 
@@ -664,11 +714,13 @@ kill <PID>
 
 ### 7.3 Eval 平台仍需继续增强
 
-已有 labeled v1 指标、`diagnostic_eval_details.jsonl` 和 Streamlit 失败案例 drill-down，但还不是完整评测平台：
+已有 labeled v1 指标、`diagnostic_eval_details.jsonl`、版本化 eval run、Streamlit 失败案例 drill-down、历史 run 对比、树/节点/test 混淆分析和 replay 摘要联动。
 
-- 缺少 UI 中多版本对比。
-- 缺少按节点/test/树的混淆分析。
-- 缺少 replay 回放可视化。
+仍需继续增强：
+
+- replay 仍是整段 state snapshot 摘要，缺少图节点级事件流和逐步回放。
+- 历史 run 对比当前是表格 delta，缺少趋势图和多个 run 的时间序列。
+- 混淆分析当前按 expected/predicted 聚合，后续可增加按 transition/test/node 的版本间差异归因。
 
 ### 7.4 case-only 探索仍需迭代
 
@@ -710,15 +762,16 @@ DeepSeek 当前可作为 OpenAI-compatible provider 使用，但：
 
 优先做 P0：
 
-1. 为 Eval 增加多版本趋势对比和混淆分析。
-2. 继续打磨 guardrail 边界样本的 Planner 建议。
+1. 线上/准线上 shadow diagnosis 服务化与发布后监控。
+2. 自动触发 rollback 策略和生产 registry 服务化。
 3. 保护 `.env` 与 replay 敏感信息。
+4. 将 replay 从整段 state snapshot 拆成更细粒度事件，服务 Eval 回放、TreeChangeProposal 聚合和 Agent Graph 调试。
 
 推荐下一项具体开发：
 
-- P1 优先继续 TreeProposal Store：批量文档入口、基础审核 UI 和 Tree Proposal Eval 第一版已完成，下一步做从 dynamic cluster / unsupported development case 生成或更新 proposal。
-- 随后做 `DRAFT_TREE -> CANDIDATE_TREE` 规则评估：支持 case 数、root cause family、重复检查项、人工有效率和高风险反证。
-- Eval 后续拆成 Classification Eval、Diagnosis Eval、Tree Proposal Eval 三类，并增加趋势文件、版本选择器和节点/test 维度混淆分析。
+- P1 优先继续 TreeProposal 生命周期：Tree Generation Extraction Eval、TreeChangeProposal 第一版、受控 TTL 写入和 rollback 演练已完成，下一步增强 change eval、patch diff、跨 runs 变更聚合和 release patch artifact。
+- 随后补正式生产运行链路：发布后监控、自动回滚触发和正式 shadow/gray 服务化。
+- Eval 后续拆成 Classification Eval、Diagnosis Eval、Tree Proposal Eval、Tree Generation Extraction Eval / Change Eval 等评测族，并增加多 run 趋势图、图节点级 replay 回放和自动差异归因。
 - LangGraph 后续重点不是再加线性节点，而是引入“工具执行 -> 状态更新 -> 再规划”的安全循环。
 
 详见 `TASKS.md`。

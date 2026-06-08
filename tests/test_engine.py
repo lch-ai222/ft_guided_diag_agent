@@ -2,11 +2,15 @@ from pathlib import Path
 
 from ft_diag_agent.fault_tree import RdfFaultTreeRepository
 from ft_diag_agent.models import (
+    CaseOnlyHypothesisStatus,
     CoverageStatus,
     DiagnosisMode,
+    DiagnosticWorkflowPhase,
     FaultTreeReviewStatus,
     GateStatus,
     IntakeRequest,
+    TreeChangeType,
+    TreeProposalKind,
     WorkOrder,
 )
 from ft_diag_agent.rag import DocumentRag
@@ -47,6 +51,9 @@ def test_engine_starts_case_and_plans(tmp_path: Path) -> None:
     assert state.active_tree_id == "FT_002"
     assert state.candidate_causes
     assert state.planned_actions
+    assert state.workflow_phase == DiagnosticWorkflowPhase.WAITING_HITL
+    assert state.waiting_for_human is True
+    assert state.waiting_action_ids
     assert state.gate_result.status == GateStatus.GRAY
     assert state.final_report
     assert state.replay_trace
@@ -97,6 +104,8 @@ def test_start_work_order_classifies_and_advances_active_node(tmp_path: Path) ->
     assert state.active_tree_id == "FT_002"
     assert state.active_node_id == "S105"
     assert state.gate_result.status == GateStatus.PASS
+    assert state.workflow_phase == DiagnosticWorkflowPhase.GATE_PASS
+    assert state.waiting_for_human is False
     assert state.planned_actions
     assert state.planned_actions[0].action_type == "CONFIRMATION_CHECK"
     assert "二道锁" in state.planned_actions[0].reason
@@ -117,6 +126,7 @@ def test_report_uses_active_leaf_as_confirmed_root_cause(tmp_path: Path) -> None
 
     assert state.active_node_id == "S008"
     assert state.gate_result.status == GateStatus.PASS
+    assert state.workflow_phase == DiagnosticWorkflowPhase.GATE_PASS
     assert state.final_report
     assert state.final_report.root_cause == "显示屏模组损坏"
     assert "更换显示屏模组" in state.final_report.recommended_actions
@@ -168,6 +178,28 @@ def test_rework_guard_detects_prior_striker_adjustment_misdiagnosis(tmp_path: Pa
     assert "识别到前次处置无效" in state.final_report.markdown
 
 
+def test_covered_case_with_process_drift_creates_tree_change_candidate_without_gate_override(tmp_path: Path) -> None:
+    engine = build_engine(tmp_path)
+    order = WorkOrder(
+        order_id="WO-DR-CHANGE-001",
+        failure_phenomenon="车门无法关闭",
+        description="新工艺变更后锁扣位置测量阈值更新，原检测项不适用，调整锁扣后仍复现。",
+        executed_checks=["T106 旧阈值判定正常但现场不支持该分支", "检测项不适用，需要替代检测"],
+    )
+
+    state = engine.start_work_order(order, DiagnosisMode.PRODUCTION)
+
+    assert state.coverage_decision.status == CoverageStatus.COVERED
+    assert state.active_tree_id == "FT_002"
+    assert state.tree_change_proposal
+    assert state.tree_change_proposal.proposal_kind == TreeProposalKind.TREE_CHANGE
+    assert state.tree_change_proposal.target_tree_id == "FT_002"
+    assert TreeChangeType.UPDATE_THRESHOLD in state.tree_change_proposal.change_types
+    assert TreeChangeType.UPDATE_TEST in state.tree_change_proposal.change_types
+    assert state.gate_result.status != GateStatus.PASS
+    assert "已有树变更候选" in state.final_report.markdown
+
+
 def test_rework_guard_uses_sanitized_similar_history_without_label_leakage(tmp_path: Path) -> None:
     settings = Settings(
         fault_tree_ttl_path=TTL,
@@ -210,6 +242,8 @@ def test_production_unsupported_fails(tmp_path: Path) -> None:
 
     assert state.coverage_decision.status == CoverageStatus.UNSUPPORTED
     assert state.gate_result.status == GateStatus.FAIL
+    assert state.workflow_phase == DiagnosticWorkflowPhase.GATE_FAIL
+    assert state.waiting_for_human is False
     assert not state.planned_actions
     assert not state.evidence_chain
     assert state.fault_tree_generation_request is None
@@ -247,6 +281,8 @@ def test_direct_fallback_routes_development_unsupported_to_case_only(tmp_path: P
     assert state.coverage_decision.status == CoverageStatus.UNSUPPORTED
     assert state.diagnosis_mode == DiagnosisMode.CASE_ONLY_EXPLORATORY
     assert state.gate_result.status == GateStatus.GRAY
+    assert state.workflow_phase == DiagnosticWorkflowPhase.WAITING_HITL
+    assert state.waiting_for_human is True
     assert state.planned_actions
     assert state.case_only_plan
     assert state.fault_tree_generation_request
@@ -296,6 +332,7 @@ def test_development_unsupported_is_exploratory(tmp_path: Path) -> None:
     state = engine.apply_human_test(
         state,
         {
+            "action_id": action.action_id,
             "test_id": action.test_id,
             "result": "已补充探索性检查，疑似压缩机制冷回路问题。",
             "passed": True,
@@ -306,12 +343,51 @@ def test_development_unsupported_is_exploratory(tmp_path: Path) -> None:
     )
 
     assert state.gate_result.status == GateStatus.GRAY
+    assert state.workflow_phase == DiagnosticWorkflowPhase.WAITING_HITL
     assert state.final_report
     assert state.final_report.root_cause is None
     assert state.case_only_findings
+    assert state.case_only_plan.iteration >= 2
+    assert action.action_id in state.case_only_plan.completed_action_ids
+    supported = next(item for item in state.case_only_hypotheses if item.hypothesis_id == action.target_cause_id)
+    assert supported.status == CaseOnlyHypothesisStatus.SUPPORTED
+    assert supported.supporting_evidence_ids
+    assert all(item.test_id != action.test_id for item in state.planned_actions)
+    assert any(item.status == CaseOnlyHypothesisStatus.NEEDS_EVIDENCE for item in state.case_only_hypotheses)
     assert state.fault_tree_generation_request
     assert state.fault_tree_generation_request.work_order_id == "WO-UN-260520-002"
     assert state.fault_tree_request_cluster
     assert "动态故障树候选请求" in state.final_report.markdown
     assert "聚类ID" in state.final_report.markdown
     assert any("不可生产 PASS" in note for note in state.gate_result.risk_notes)
+
+
+def test_case_only_loop_refutes_hypothesis_and_replans_without_repeating_action(tmp_path: Path) -> None:
+    engine = build_engine(tmp_path)
+    order = WorkOrder(
+        order_id="WO-UN-LOOP-REFUTE",
+        failure_phenomenon="空调制冷不足",
+        description="压缩机工作但出风温度偏高。",
+    )
+    state = engine.start_work_order(order, DiagnosisMode.DEVELOPMENT)
+    action = state.planned_actions[0]
+
+    state = engine.apply_human_test(
+        state,
+        {
+            "action_id": action.action_id,
+            "test_id": action.test_id,
+            "result": "高低压和出风温度均正常，未支持该探索假设。",
+            "passed": False,
+            "supports_cause_id": action.target_cause_id,
+            "strength": 0.8,
+            "notes": "反证样例",
+        },
+    )
+
+    refuted = next(item for item in state.case_only_hypotheses if item.hypothesis_id == action.target_cause_id)
+    assert refuted.status == CaseOnlyHypothesisStatus.REFUTED
+    assert refuted.contradicting_evidence_ids
+    assert state.gate_result.status == GateStatus.GRAY
+    assert all(item.test_id != action.test_id for item in state.planned_actions)
+    assert state.case_only_plan.stopped_reason is None or state.planned_actions

@@ -832,6 +832,14 @@ class BatchTreeGenerationService:
             self._write_artifact_files(job)
             self.append_proposal(proposal)
             self.proposal_store.save_artifact_snapshot(proposal, artifact=artifact)
+            from ft_diag_agent.tree_generation_eval import evaluate_tree_generation_extraction
+
+            extraction_eval = evaluate_tree_generation_extraction(
+                proposal,
+                artifact,
+                source_texts=[chunk["text"] for chunk in chunks],
+            )
+            self.proposal_store.append_eval_result(extraction_eval)
             recorder.finish("persist")
             if job.artifact:
                 job.artifact.stage_timings = recorder.timings
@@ -1274,6 +1282,7 @@ class BatchTreeGenerationService:
         _apply_hitl_decision_to_artifact(job.artifact, decision)
         job.artifact.hitl_decisions.append(decision)
         _refresh_artifact_after_hitl(job)
+        _prune_resolved_hitl_suggestions(job.artifact)
         if job.proposal:
             self.proposal_store.save_proposal(job.proposal)
             self.proposal_store.save_artifact_snapshot(job.proposal, artifact=job.artifact)
@@ -1555,6 +1564,17 @@ def _read_job_source_chunks(job: TreeGenerationJob) -> list[dict[str, str]]:
 
 def _hitl_item_key(item: dict[str, Any]) -> tuple[str, str, str]:
     return (str(item.get("object_type")), str(item.get("object_id")), str(item.get("field")))
+
+
+def _hitl_suggestion_key(suggestion: TreeGenerationHitlSuggestion) -> tuple[str, str, str]:
+    return (suggestion.object_type, suggestion.object_id, suggestion.field)
+
+
+def _prune_resolved_hitl_suggestions(artifact: TreeGenerationArtifact) -> None:
+    pending_keys = {_hitl_item_key(item) for item in generation_hitl_items(artifact)}
+    artifact.hitl_suggestions = [
+        suggestion for suggestion in artifact.hitl_suggestions if _hitl_suggestion_key(suggestion) in pending_keys
+    ]
 
 
 def _hitl_query(artifact: TreeGenerationArtifact, item: dict[str, Any]) -> str:
